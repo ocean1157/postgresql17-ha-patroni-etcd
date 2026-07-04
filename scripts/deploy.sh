@@ -44,7 +44,20 @@ main() {
 
   for ip in $(all_node_ips); do
     log "install node $ip"
-    run_remote "$ip" "cd '$INSTALL_ROOT' && bash scripts/node-install.sh"
+    run_remote "$ip" "cd '$INSTALL_ROOT' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
+  done
+
+  for ip in $(all_node_ips); do
+    log "start etcd on $ip"
+    run_remote "$ip" "systemctl daemon-reload && systemctl enable etcd patroni && systemctl start --no-block etcd"
+  done
+
+  log "wait for etcd health"
+  run_remote "$(primary_ip)" "for i in {1..60}; do etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; exit 1"
+
+  for ip in $(all_node_ips); do
+    log "start patroni on $ip"
+    run_remote "$ip" "systemctl start patroni"
   done
 
   log "cluster deployment commands finished"

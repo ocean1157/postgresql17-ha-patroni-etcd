@@ -70,6 +70,16 @@ etcd_hosts_yaml() {
   done
 }
 
+etcd_client_endpoints() {
+  local item node_ip parts=()
+  for item in "${CLUSTER_NODES[@]}"; do
+    node_ip="${item#*:}"
+    parts+=("http://${node_ip}:${ETCD_CLIENT_PORT}")
+  done
+  local IFS=,
+  printf '%s\n' "${parts[*]}"
+}
+
 primary_ip() {
   printf '%s\n' "${CLUSTER_NODES[0]#*:}"
 }

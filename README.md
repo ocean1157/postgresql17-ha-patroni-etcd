@@ -5,7 +5,7 @@
 ## 架构
 
 - PostgreSQL 17.10: 三节点 Patroni 管理的一主两备流复制集群。
-- Patroni: 负责 PostgreSQL 生命周期、主备选举、故障切换、复制槽和动态参数管理。
+- Patroni 3.0.4: 负责 PostgreSQL 生命周期、主备选举、故障切换、复制槽和动态参数管理。该版本兼容 CentOS 7 默认可安装的 Python 3.6。
 - etcd 3.6.12: 三节点 DCS 仲裁，使用 v3 API。
 - VIP: 可选，主节点回调自动绑定/释放虚拟 IP。
 
@@ -62,4 +62,4 @@ bash scripts/check-cluster.sh
 
 ## 安装包说明
 
-[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-packages.sh` 会把源码包下载为 `packages/postgresql-17.10.tar.gz`，同时下载 etcd Linux 包。Patroni 通过 Python venv + pip 安装，若生产环境不能访问外网，请提前把 Python wheels 放入 `packages/wheels/`。
+[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-packages.sh` 会把源码包下载为 `packages/postgresql-17.10.tar.gz`，同时下载 etcd Linux 包。Patroni 通过 Python venv + pip 安装，默认版本见 `config/cluster.env`；若生产环境不能访问外网，请提前把 Python wheels 放入 `packages/wheels/`。

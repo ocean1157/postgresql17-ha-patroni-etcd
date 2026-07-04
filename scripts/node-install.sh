@@ -15,15 +15,23 @@ MY_NAME="$(node_name_by_ip "$MY_IP" || true)"
 
 install_prereqs() {
   log "install prerequisites"
-  pkg_install gcc make readline-devel zlib-devel openssl-devel libuuid-devel perl tar gzip python3 python3-devel python3-pip sudo chrony || \
-  pkg_install gcc make libreadline-dev zlib1g-dev libssl-dev uuid-dev perl tar gzip python3 python3-dev python3-pip sudo chrony
+  if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    pkg_install gcc make bison flex readline-devel zlib-devel openssl-devel libuuid-devel libicu-devel perl tar gzip python3 python3-devel python3-pip sudo chrony
+  elif command -v apt-get >/dev/null 2>&1; then
+    pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
+  else
+    die "no supported package manager found"
+  fi
 }
 
 create_users_dirs() {
   log "create postgres user and directories"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
   mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_WAL_ARCHIVE" "$PG_BACKUP" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PATRONI_LOG_DIR"
+  mkdir -p /var/run/postgresql
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$(dirname "$PG_DATA")" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PATRONI_LOG_DIR"
+  chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
+  chmod 775 /var/run/postgresql
   chmod 700 "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP"
 }
 
@@ -68,12 +76,17 @@ install_etcd() {
 
 install_patroni() {
   log "install Patroni venv"
-  python3 -m venv /opt/patroni-venv
-  if compgen -G "$PROJECT_DIR/packages/wheels/*.whl" >/dev/null; then
-    /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" "patroni[etcd3]" psycopg[binary]
+  if python3 -m venv /opt/patroni-venv >/dev/null 2>&1; then
+    :
   else
-    /opt/patroni-venv/bin/pip install --upgrade pip
-    /opt/patroni-venv/bin/pip install "patroni[etcd3]" psycopg[binary]
+    python3 -m pip install --upgrade --user virtualenv
+    python3 -m virtualenv /opt/patroni-venv
+  fi
+  if compgen -G "$PROJECT_DIR/packages/wheels/*.whl" >/dev/null; then
+    /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+  else
+    /opt/patroni-venv/bin/pip install --upgrade "pip<22"
+    /opt/patroni-venv/bin/pip install "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   fi
   ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
   ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
@@ -218,7 +231,7 @@ bootstrap:
         archive_command: 'test ! -f ${PG_WAL_ARCHIVE}/%f && cp %p ${PG_WAL_ARCHIVE}/%f'
   initdb:
     - encoding: UTF8
-    - locale: C.UTF-8
+    - locale: C
     - data-checksums
   pg_hba:
     - host all all 0.0.0.0/0 scram-sha-256
@@ -279,6 +292,8 @@ Environment=PATH=${PG_PREFIX}/bin:/opt/patroni-venv/bin:/usr/local/sbin:/usr/loc
 ExecStart=/usr/local/bin/patroni ${PATRONI_HOME}/patroni.yml
 Restart=on-failure
 RestartSec=5
+RuntimeDirectory=postgresql
+RuntimeDirectoryMode=0775
 TimeoutStopSec=600
 LimitNOFILE=1024000
 LimitMEMLOCK=infinity
@@ -300,9 +315,14 @@ EOF
 
 start_services() {
   systemctl daemon-reload
-  systemctl enable --now etcd
+  systemctl enable etcd patroni
+  if [[ "${SKIP_SERVICE_START:-0}" == "1" ]]; then
+    log "service start skipped by SKIP_SERVICE_START=1"
+    return 0
+  fi
+  systemctl start etcd
   sleep 3
-  systemctl enable --now patroni
+  systemctl start patroni
 }
 
 main() {

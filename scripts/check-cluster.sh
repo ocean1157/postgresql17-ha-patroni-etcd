@@ -21,4 +21,4 @@ patronictl -c "$PATRONI_HOME/patroni.yml" list || true
 
 echo
 echo "== postgres version =="
-psql -h "$(primary_ip)" -p "$POSTGRES_PORT" -U "$POSTGRES_SUPERUSER" -d postgres -c "select version();" || true
+PGPASSWORD="$POSTGRES_SUPERPASS" psql -h "$(primary_ip)" -p "$POSTGRES_PORT" -U "$POSTGRES_SUPERUSER" -d postgres -c "select version();" || true
