@@ -8,8 +8,8 @@ load_config
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 
-ssh_base=(ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
-scp_base=(scp -P "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
+ssh_base=(ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
+scp_base=(scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
 if [[ -n "${SSH_KEY:-}" ]]; then
   ssh_base+=(-i "$SSH_KEY")
   scp_base+=(-i "$SSH_KEY")
