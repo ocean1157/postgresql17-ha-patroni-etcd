@@ -131,6 +131,7 @@ Type=notify
 ExecStart=/usr/local/bin/etcd --config-file /etc/etcd.conf.yml
 Restart=on-failure
 RestartSec=5
+TimeoutStartSec=0
 LimitNOFILE=65536
 
 [Install]
@@ -331,7 +332,7 @@ start_services() {
     log "service start skipped by SKIP_SERVICE_START=1"
     return 0
   fi
-  systemctl start etcd
+  systemctl start --no-block etcd
   sleep 3
   systemctl start patroni
 }

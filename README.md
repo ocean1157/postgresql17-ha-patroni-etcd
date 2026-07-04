@@ -39,6 +39,14 @@ bash scripts/deploy.sh
 
 `deploy.sh` 会把项目分发到其他节点，并在三台机器上执行节点安装。若 `SSH_PASSWORD` 非空且未配置免密 SSH，脚本会尝试安装/使用 `sshpass`。
 
+部署过程会显式写入并启用 `etcd.service`、`patroni.service`，按如下顺序启动：
+
+1. 所有节点完成软件安装和 systemd unit 写入。
+2. 所有节点执行 `systemctl daemon-reload` 和 `systemctl enable`。
+3. 非阻塞启动三节点 etcd，并等待 etcd endpoint health。
+4. 启动三节点 Patroni，并等待 Patroni 集群出现 Leader 和 streaming Replica。
+5. 校验每个节点 `etcd.service`、`patroni.service` 均为 enabled/active。
+
 ## 生产部署建议
 
 - 不建议关闭防火墙和 SELinux。脚本仅提示端口要求，默认不关闭安全机制。

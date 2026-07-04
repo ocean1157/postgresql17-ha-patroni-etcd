@@ -48,16 +48,29 @@ main() {
   done
 
   for ip in $(all_node_ips); do
+    log "enable systemd units on $ip"
+    run_remote "$ip" "systemctl daemon-reload && systemctl enable etcd.service patroni.service"
+  done
+
+  for ip in $(all_node_ips); do
     log "start etcd on $ip"
-    run_remote "$ip" "systemctl daemon-reload && systemctl enable etcd patroni && systemctl start --no-block etcd"
+    run_remote "$ip" "systemctl reset-failed etcd.service || true; systemctl start --no-block etcd.service"
   done
 
   log "wait for etcd health"
-  run_remote "$(primary_ip)" "for i in {1..60}; do etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; exit 1"
+  run_remote "$(primary_ip)" "for i in {1..60}; do etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
 
   for ip in $(all_node_ips); do
     log "start patroni on $ip"
-    run_remote "$ip" "systemctl start patroni"
+    run_remote "$ip" "systemctl reset-failed patroni.service || true; systemctl start patroni.service"
+  done
+
+  log "wait for Patroni cluster"
+  run_remote "$(primary_ip)" "for i in {1..90}; do patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+
+  for ip in $(all_node_ips); do
+    log "verify systemd services on $ip"
+    run_remote "$ip" "systemctl is-enabled etcd.service patroni.service && systemctl is-active etcd.service patroni.service"
   done
 
   log "cluster deployment commands finished"
