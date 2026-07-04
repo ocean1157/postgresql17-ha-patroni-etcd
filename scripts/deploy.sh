@@ -26,6 +26,7 @@ fi
 
 run_remote() {
   local ip="$1"
+  shift
   "${ssh_base[@]}" "${SSH_USER}@${ip}" "$@"
 }
 
