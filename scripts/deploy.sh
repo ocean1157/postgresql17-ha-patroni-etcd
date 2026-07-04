@@ -31,6 +31,10 @@ run_remote() {
 
 copy_project() {
   local ip="$1"
+  if [[ "$ip" == "$(current_ip)" ]]; then
+    log "project already on local node $ip:$PROJECT_DIR"
+    return 0
+  fi
   log "copy project to $ip:$INSTALL_ROOT"
   run_remote "$ip" "mkdir -p '$INSTALL_ROOT'"
   tar -C "$PROJECT_DIR" -czf - . | "${ssh_base[@]}" "${SSH_USER}@${ip}" "tar -C '$INSTALL_ROOT' -xzf -"
