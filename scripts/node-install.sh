@@ -24,6 +24,17 @@ install_prereqs() {
   fi
 }
 
+configure_firewall() {
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    log "open firewall ports for PostgreSQL HA"
+    firewall-cmd --permanent --add-port="${POSTGRES_PORT}/tcp"
+    firewall-cmd --permanent --add-port="${PATRONI_PORT}/tcp"
+    firewall-cmd --permanent --add-port="${ETCD_CLIENT_PORT}/tcp"
+    firewall-cmd --permanent --add-port="${ETCD_PEER_PORT}/tcp"
+    firewall-cmd --reload
+  fi
+}
+
 create_users_dirs() {
   log "create postgres user and directories"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
@@ -327,6 +338,7 @@ start_services() {
 
 main() {
   install_prereqs
+  configure_firewall
   create_users_dirs
   install_postgres
   install_etcd
