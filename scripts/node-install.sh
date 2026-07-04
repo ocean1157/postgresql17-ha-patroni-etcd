@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib.sh
+source "$PROJECT_DIR/scripts/lib.sh"
+load_config
+
+[[ "$(id -u)" -eq 0 ]] || die "run as root"
+
+ARCH="$(detect_arch)"
+MY_IP="$(current_ip)"
+MY_NAME="$(node_name_by_ip "$MY_IP" || true)"
+[[ -n "$MY_NAME" ]] || die "current node IP $MY_IP is not present in CLUSTER_NODES"
+
+install_prereqs() {
+  log "install prerequisites"
+  pkg_install gcc make readline-devel zlib-devel openssl-devel libuuid-devel perl tar gzip python3 python3-devel python3-pip sudo chrony || \
+  pkg_install gcc make libreadline-dev zlib1g-dev libssl-dev uuid-dev perl tar gzip python3 python3-dev python3-pip sudo chrony
+}
+
+create_users_dirs() {
+  log "create postgres user and directories"
+  id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
+  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_WAL_ARCHIVE" "$PG_BACKUP" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PATRONI_LOG_DIR"
+  chmod 700 "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP"
+}
+
+install_postgres() {
+  if [[ -x "$PG_PREFIX/bin/postgres" ]]; then
+    log "PostgreSQL already installed at $PG_PREFIX"
+    return 0
+  fi
+  local tgz="$PROJECT_DIR/packages/postgresql-${POSTGRES_VERSION}.tar.gz"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  log "build PostgreSQL $POSTGRES_VERSION"
+  local build_dir="/tmp/postgresql-${POSTGRES_VERSION}-build"
+  rm -rf "$build_dir"
+  mkdir -p "$build_dir"
+  tar -xzf "$tgz" -C "$build_dir" --strip-components=1
+  cd "$build_dir"
+  ./configure --prefix="$PG_PREFIX" --with-openssl --with-zlib --with-uuid=e2fs
+  make -j"$(nproc)"
+  make install
+  cd contrib
+  make -j"$(nproc)"
+  make install
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX"
+}
+
+install_etcd() {
+  if command -v etcd >/dev/null 2>&1; then
+    log "etcd already installed"
+    return 0
+  fi
+  local tgz="$PROJECT_DIR/packages/etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  log "install etcd $ETCD_VERSION"
+  local tmp="/tmp/etcd-${ETCD_VERSION}"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  tar -xzf "$tgz" -C "$tmp" --strip-components=1
+  install -m 0755 "$tmp/etcd" /usr/local/bin/etcd
+  install -m 0755 "$tmp/etcdctl" /usr/local/bin/etcdctl
+  install -m 0755 "$tmp/etcdutl" /usr/local/bin/etcdutl
+}
+
+install_patroni() {
+  log "install Patroni venv"
+  python3 -m venv /opt/patroni-venv
+  if compgen -G "$PROJECT_DIR/packages/wheels/*.whl" >/dev/null; then
+    /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" "patroni[etcd3]" psycopg[binary]
+  else
+    /opt/patroni-venv/bin/pip install --upgrade pip
+    /opt/patroni-venv/bin/pip install "patroni[etcd3]" psycopg[binary]
+  fi
+  ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
+  ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
+}
+
+write_etcd_config() {
+  local initial_cluster
+  initial_cluster="$(etcd_initial_cluster)"
+  cat >/etc/etcd.conf.yml <<EOF
+name: ${MY_NAME}
+data-dir: ${ETCD_DATA}/${MY_NAME}
+initial-advertise-peer-urls: http://${MY_IP}:${ETCD_PEER_PORT}
+listen-peer-urls: http://${MY_IP}:${ETCD_PEER_PORT}
+listen-client-urls: http://${MY_IP}:${ETCD_CLIENT_PORT},http://127.0.0.1:${ETCD_CLIENT_PORT}
+advertise-client-urls: http://${MY_IP}:${ETCD_CLIENT_PORT}
+initial-cluster-token: ${CLUSTER_NAME}
+initial-cluster: ${initial_cluster}
+initial-cluster-state: new
+logger: zap
+log-outputs: [stderr]
+EOF
+
+  cat >/etc/systemd/system/etcd.service <<EOF
+[Unit]
+Description=etcd key-value store for PostgreSQL HA
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd --config-file /etc/etcd.conf.yml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+write_vip_callback() {
+  cat >"$PATRONI_HOME/vip_callback.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="\${1:-}"
+ROLE="\${2:-}"
+VIP_ADDRESS="${VIP_ADDRESS}"
+VIP_CIDR="${VIP_CIDR}"
+VIP_DEVICE="${VIP_DEVICE}"
+VIP_LABEL="${VIP_LABEL}"
+
+[[ -n "\$VIP_ADDRESS" ]] || exit 0
+
+has_vip() {
+  /sbin/ip addr show dev "\$VIP_DEVICE" | grep -qw "\$VIP_ADDRESS"
+}
+
+add_vip() {
+  if ! has_vip; then
+    sudo /sbin/ip addr add "\${VIP_ADDRESS}/\${VIP_CIDR}" dev "\$VIP_DEVICE" label "\${VIP_DEVICE}:\${VIP_LABEL}"
+    sudo /usr/sbin/arping -q -A -c 2 -I "\$VIP_DEVICE" "\$VIP_ADDRESS" || true
+  fi
+}
+
+del_vip() {
+  if has_vip; then
+    sudo /sbin/ip addr del "\${VIP_ADDRESS}/\${VIP_CIDR}" dev "\$VIP_DEVICE" label "\${VIP_DEVICE}:\${VIP_LABEL}" || true
+  fi
+}
+
+case "\$ACTION:\$ROLE" in
+  on_start:master|on_start:primary|on_role_change:master|on_role_change:primary) add_vip ;;
+  on_stop:master|on_stop:primary|on_role_change:replica|on_role_change:slave) del_vip ;;
+esac
+EOF
+  chmod 0755 "$PATRONI_HOME/vip_callback.sh"
+  chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PATRONI_HOME/vip_callback.sh"
+
+  if [[ -n "$VIP_ADDRESS" ]]; then
+    cat >/etc/sudoers.d/postgres-patroni-vip <<EOF
+${POSTGRES_OS_USER} ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/arping
+EOF
+    chmod 0440 /etc/sudoers.d/postgres-patroni-vip
+  fi
+}
+
+write_patroni_config() {
+  local etcd_hosts
+  etcd_hosts="$(etcd_hosts_yaml)"
+  cat >"$PATRONI_HOME/patroni.yml" <<EOF
+scope: ${SCOPE}
+namespace: /service/
+name: ${MY_NAME}
+
+restapi:
+  listen: ${MY_IP}:${PATRONI_PORT}
+  connect_address: ${MY_IP}:${PATRONI_PORT}
+
+etcd3:
+  hosts:
+${etcd_hosts}
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    synchronous_mode: ${SYNCHRONOUS_MODE}
+    synchronous_mode_strict: ${SYNCHRONOUS_MODE_STRICT}
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        listen_addresses: '*'
+        port: ${POSTGRES_PORT}
+        max_connections: ${MAX_CONNECTIONS}
+        shared_buffers: ${SHARED_BUFFERS}
+        effective_cache_size: ${EFFECTIVE_CACHE_SIZE}
+        maintenance_work_mem: ${MAINTENANCE_WORK_MEM}
+        work_mem: ${WORK_MEM}
+        wal_level: replica
+        wal_log_hints: 'on'
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_keep_size: ${WAL_KEEP_SIZE}
+        max_wal_size: ${MAX_WAL_SIZE}
+        checkpoint_completion_target: 0.9
+        hot_standby: 'on'
+        hot_standby_feedback: 'on'
+        password_encryption: scram-sha-256
+        shared_preload_libraries: pg_stat_statements
+        pg_stat_statements.max: 10000
+        pg_stat_statements.track: all
+        logging_collector: 'on'
+        log_directory: log
+        log_filename: postgresql-%Y-%m-%d.log
+        log_line_prefix: '%m [%p] %u@%d %r %a '
+        log_min_duration_statement: 1000
+        archive_mode: 'on'
+        archive_command: 'test ! -f ${PG_WAL_ARCHIVE}/%f && cp %p ${PG_WAL_ARCHIVE}/%f'
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums
+  pg_hba:
+    - host all all 0.0.0.0/0 scram-sha-256
+    - host replication ${REPLICATION_USER} 0.0.0.0/0 scram-sha-256
+  users:
+    ${REWIND_USER}:
+      password: ${REWIND_PASS}
+      options:
+        - createrole
+        - createdb
+
+postgresql:
+  listen: ${MY_IP}:${POSTGRES_PORT}
+  connect_address: ${MY_IP}:${POSTGRES_PORT}
+  data_dir: ${PG_DATA}
+  bin_dir: ${PG_PREFIX}/bin
+  config_dir: ${PG_DATA}
+  pgpass: /home/${POSTGRES_OS_USER}/.pgpass
+  authentication:
+    superuser:
+      username: ${POSTGRES_SUPERUSER}
+      password: ${POSTGRES_SUPERPASS}
+    replication:
+      username: ${REPLICATION_USER}
+      password: ${REPLICATION_PASS}
+    rewind:
+      username: ${REWIND_USER}
+      password: ${REWIND_PASS}
+  callbacks:
+    on_start: ${PATRONI_HOME}/vip_callback.sh
+    on_stop: ${PATRONI_HOME}/vip_callback.sh
+    on_role_change: ${PATRONI_HOME}/vip_callback.sh
+  parameters:
+    unix_socket_directories: '/var/run/postgresql'
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
+EOF
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PATRONI_HOME"
+  chmod 0600 "$PATRONI_HOME/patroni.yml"
+}
+
+write_systemd() {
+  cat >/etc/systemd/system/patroni.service <<EOF
+[Unit]
+Description=Patroni PostgreSQL HA manager
+Wants=network-online.target etcd.service
+After=network-online.target etcd.service
+
+[Service]
+Type=simple
+User=${POSTGRES_OS_USER}
+Group=${POSTGRES_OS_USER}
+Environment=PATH=${PG_PREFIX}/bin:/opt/patroni-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/usr/local/bin/patroni ${PATRONI_HOME}/patroni.yml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=600
+LimitNOFILE=1024000
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+configure_profile() {
+  cat >/etc/profile.d/postgresql17.sh <<EOF
+export PGHOME=${PG_PREFIX}
+export PGDATA=${PG_DATA}
+export PGPORT=${POSTGRES_PORT}
+export PATH=\$PGHOME/bin:/opt/patroni-venv/bin:\$PATH
+export LD_LIBRARY_PATH=\$PGHOME/lib:\${LD_LIBRARY_PATH:-}
+EOF
+}
+
+start_services() {
+  systemctl daemon-reload
+  systemctl enable --now etcd
+  sleep 3
+  systemctl enable --now patroni
+}
+
+main() {
+  install_prereqs
+  create_users_dirs
+  install_postgres
+  install_etcd
+  install_patroni
+  write_etcd_config
+  write_vip_callback
+  write_patroni_config
+  write_systemd
+  configure_profile
+  start_services
+  log "node $MY_NAME ($MY_IP) installed"
+}
+
+main "$@"
