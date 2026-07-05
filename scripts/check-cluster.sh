@@ -6,14 +6,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_DIR/scripts/lib.sh"
 load_config
 
-ENDPOINTS=""
-for ip in $(all_node_ips); do
-  ENDPOINTS="${ENDPOINTS},http://${ip}:${ETCD_CLIENT_PORT}"
-done
-ENDPOINTS="${ENDPOINTS#,}"
+ENDPOINTS="$(etcd_client_endpoints)"
 
 echo "== etcd endpoint health =="
-ETCDCTL_API=3 etcdctl --endpoints="$ENDPOINTS" endpoint health || true
+env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 etcdctl --endpoints="$ENDPOINTS" endpoint health || true
 
 echo
 echo "== patroni cluster =="

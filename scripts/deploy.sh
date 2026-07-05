@@ -63,7 +63,7 @@ main() {
   done
 
   log "wait for etcd health"
-  run_remote "$(primary_ip)" "for i in {1..60}; do etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
+  run_remote "$(primary_ip)" "for i in {1..60}; do env -u ETCDCTL_ENDPOINTS etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
 
   for ip in $(all_node_ips); do
     log "start patroni on $ip"
