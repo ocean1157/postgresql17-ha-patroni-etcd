@@ -293,6 +293,11 @@ EOF
 write_patroni_config() {
   local etcd_hosts
   etcd_hosts="$(etcd_hosts_yaml)"
+  local tag_nofailover tag_noloadbalance tag_clonefrom tag_nosync
+  tag_nofailover="$(node_tag_value "$MY_NAME" nofailover false)"
+  tag_noloadbalance="$(node_tag_value "$MY_NAME" noloadbalance false)"
+  tag_clonefrom="$(node_tag_value "$MY_NAME" clonefrom false)"
+  tag_nosync="$(node_tag_value "$MY_NAME" nosync false)"
   cat >"$PATRONI_HOME/patroni.yml" <<EOF
 scope: ${SCOPE}
 namespace: /service/
@@ -308,43 +313,44 @@ ${etcd_hosts}
 
 bootstrap:
   dcs:
-    ttl: 30
-    loop_wait: 10
-    retry_timeout: 10
-    maximum_lag_on_failover: 1048576
+    ttl: ${PATRONI_TTL}
+    loop_wait: ${PATRONI_LOOP_WAIT}
+    retry_timeout: ${PATRONI_RETRY_TIMEOUT}
+    maximum_lag_on_failover: ${PATRONI_MAXIMUM_LAG_ON_FAILOVER}
     synchronous_mode: ${SYNCHRONOUS_MODE}
     synchronous_mode_strict: ${SYNCHRONOUS_MODE_STRICT}
+    synchronous_node_count: ${SYNCHRONOUS_NODE_COUNT}
     postgresql:
-      use_pg_rewind: true
-      use_slots: true
+      use_pg_rewind: ${PATRONI_USE_PG_REWIND}
+      use_slots: ${PATRONI_USE_SLOTS}
       parameters:
-        listen_addresses: '*'
+        listen_addresses: '${PGCONF_LISTEN_ADDRESSES}'
         port: ${POSTGRES_PORT}
-        max_connections: ${MAX_CONNECTIONS}
-        shared_buffers: ${SHARED_BUFFERS}
-        effective_cache_size: ${EFFECTIVE_CACHE_SIZE}
-        maintenance_work_mem: ${MAINTENANCE_WORK_MEM}
-        work_mem: ${WORK_MEM}
-        wal_level: replica
-        wal_log_hints: 'on'
-        max_wal_senders: 10
-        max_replication_slots: 10
-        wal_keep_size: ${WAL_KEEP_SIZE}
-        max_wal_size: ${MAX_WAL_SIZE}
-        checkpoint_completion_target: 0.9
-        hot_standby: 'on'
-        hot_standby_feedback: 'on'
-        password_encryption: scram-sha-256
-        shared_preload_libraries: pg_stat_statements
-        pg_stat_statements.max: 10000
-        pg_stat_statements.track: all
-        logging_collector: 'on'
-        log_directory: log
-        log_filename: postgresql-%Y-%m-%d.log
-        log_line_prefix: '%m [%p] %u@%d %r %a '
-        log_min_duration_statement: 1000
-        archive_mode: 'on'
-        archive_command: 'test ! -f ${PG_WAL_ARCHIVE}/%f && cp %p ${PG_WAL_ARCHIVE}/%f'
+        max_connections: ${PGCONF_MAX_CONNECTIONS}
+        shared_buffers: ${PGCONF_SHARED_BUFFERS}
+        effective_cache_size: ${PGCONF_EFFECTIVE_CACHE_SIZE}
+        maintenance_work_mem: ${PGCONF_MAINTENANCE_WORK_MEM}
+        work_mem: ${PGCONF_WORK_MEM}
+        wal_level: ${PGCONF_WAL_LEVEL}
+        wal_log_hints: '${PGCONF_WAL_LOG_HINTS}'
+        max_wal_senders: ${PGCONF_MAX_WAL_SENDERS}
+        max_replication_slots: ${PGCONF_MAX_REPLICATION_SLOTS}
+        wal_keep_size: ${PGCONF_WAL_KEEP_SIZE}
+        max_wal_size: ${PGCONF_MAX_WAL_SIZE}
+        checkpoint_completion_target: ${PGCONF_CHECKPOINT_COMPLETION_TARGET}
+        hot_standby: '${PGCONF_HOT_STANDBY}'
+        hot_standby_feedback: '${PGCONF_HOT_STANDBY_FEEDBACK}'
+        password_encryption: ${PGCONF_PASSWORD_ENCRYPTION}
+        shared_preload_libraries: ${PGCONF_SHARED_PRELOAD_LIBRARIES}
+        pg_stat_statements.max: ${PGCONF_PG_STAT_STATEMENTS_MAX}
+        pg_stat_statements.track: ${PGCONF_PG_STAT_STATEMENTS_TRACK}
+        logging_collector: '${PGCONF_LOGGING_COLLECTOR}'
+        log_directory: ${PGCONF_LOG_DIRECTORY}
+        log_filename: ${PGCONF_LOG_FILENAME}
+        log_line_prefix: '${PGCONF_LOG_LINE_PREFIX}'
+        log_min_duration_statement: ${PGCONF_LOG_MIN_DURATION_STATEMENT}
+        archive_mode: '${PGCONF_ARCHIVE_MODE}'
+        archive_command: '${PGCONF_ARCHIVE_COMMAND}'
   initdb:
     - encoding: UTF8
     - locale: C
@@ -381,13 +387,13 @@ postgresql:
     on_stop: ${PATRONI_HOME}/vip_callback.sh
     on_role_change: ${PATRONI_HOME}/vip_callback.sh
   parameters:
-    unix_socket_directories: '/var/run/postgresql'
+    unix_socket_directories: '${PGCONF_UNIX_SOCKET_DIRECTORIES}'
 
 tags:
-  nofailover: false
-  noloadbalance: false
-  clonefrom: false
-  nosync: false
+  nofailover: ${tag_nofailover}
+  noloadbalance: ${tag_noloadbalance}
+  clonefrom: ${tag_clonefrom}
+  nosync: ${tag_nosync}
 EOF
   chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PATRONI_HOME"
   chmod 0600 "$PATRONI_HOME/patroni.yml"

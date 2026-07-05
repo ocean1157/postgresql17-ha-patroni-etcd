@@ -82,3 +82,39 @@ postgres nofile limit = 102400
 - The default VIP device was `eth0`, but the test VMs use `ens33`; `config/cluster.env` was updated.
 - A global profile script initially leaked `ETCDCTL_ENDPOINTS` into root shells, causing etcd 3.6 `etcdctl --endpoints` to fail with a flag/env conflict; the profile is now postgres-user-only and checks use `env -u ETCDCTL_ENDPOINTS`.
 - VIP was bound but PostgreSQL only listened on the node IP; Patroni now generates `postgresql.listen: 0.0.0.0:5432`.
+
+## Sync Standby Regression
+
+The configuration was further split into `[postgresql]`, `[postgresql.install]`,
+`[postgresql.auth]`, `[postgresql.conf]`, `[patroni.dcs]`, `[patroni.sync]`,
+and `[node.*.tags]`.
+
+Strict one-sync-standby configuration:
+
+```text
+synchronous_mode: true
+synchronous_mode_strict: true
+synchronous_node_count: 1
+```
+
+Patroni result:
+
+```text
+| pg01 | 10.0.0.121 | Leader       | running   | TL 1 |       |
+| pg02 | 10.0.0.122 | Replica      | streaming | TL 1 | Lag 0 |
+| pg03 | 10.0.0.123 | Sync Standby | streaming | TL 1 | Lag 0 |
+```
+
+PostgreSQL replication state on the leader:
+
+```text
+synchronous_standby_names = pg03
+pg02 | async | streaming
+pg03 | sync  | streaming
+```
+
+VIP validation still passed:
+
+```text
+10.0.0.124 | pg_is_in_recovery = false
+```
