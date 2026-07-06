@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,6 +13,7 @@ ARCH="$(detect_arch)"
 PG_TGZ="$PROJECT_DIR/packages/postgresql-${POSTGRES_VERSION}.tar.gz"
 ETCD_TGZ="$PROJECT_DIR/packages/etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz"
 PG_PROBACKUP_TGZ="$PROJECT_DIR/packages/pg_probackup-${PG_PROBACKUP_VERSION}.tar.gz"
+PG_CRON_TGZ="$PROJECT_DIR/packages/pg_cron-${PG_CRON_VERSION}.tar.gz"
 mkdir -p "$PROJECT_DIR/packages"
 
 download() {
@@ -31,5 +35,6 @@ download() {
 download "https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.gz" "$PG_TGZ"
 download "https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz" "$ETCD_TGZ"
 download "https://github.com/postgrespro/pg_probackup/archive/refs/tags/${PG_PROBACKUP_VERSION}.tar.gz" "$PG_PROBACKUP_TGZ"
+download "https://github.com/citusdata/pg_cron/archive/refs/tags/v${PG_CRON_VERSION}.tar.gz" "$PG_CRON_TGZ"
 
 log "安装包已准备完成，系统依赖将在部署时通过 yum/dnf 安装"

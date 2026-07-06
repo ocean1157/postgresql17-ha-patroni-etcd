@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,8 +40,19 @@ run_with_heartbeat() {
 install_prereqs() {
   log "使用系统仓库安装依赖"
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    local pkg
+    local -a prereq_pkgs missing_pkgs=()
     mapfile -t prereq_pkgs < <(rpm_prereq_packages)
-    pkg_install "${prereq_pkgs[@]}"
+    for pkg in "${prereq_pkgs[@]}"; do
+      if ! rpm -q "$pkg" >/dev/null 2>&1; then
+        missing_pkgs+=("$pkg")
+      fi
+    done
+    if [[ "${#missing_pkgs[@]}" -eq 0 ]]; then
+      log "系统依赖已安装，跳过 yum/dnf"
+    else
+      pkg_install "${missing_pkgs[@]}"
+    fi
   elif command -v apt-get >/dev/null 2>&1; then
     pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
   else
@@ -180,15 +194,17 @@ install_postgres() {
   rm -rf "$build_dir"
   mkdir -p "$build_dir"
   tar -xzf "$tgz" -C "$build_dir" --strip-components=1
-  cd "$build_dir"
   # shellcheck disable=SC2206
   local configure_options=( $PG_CONFIGURE_OPTIONS )
-  run_with_heartbeat "PostgreSQL configure" ./configure --prefix="$PG_PREFIX" "${configure_options[@]}"
-  run_with_heartbeat "PostgreSQL make" make -j"$(nproc)"
-  run_with_heartbeat "PostgreSQL make install" make install
-  cd contrib
-  run_with_heartbeat "PostgreSQL contrib make" make -j"$(nproc)"
-  run_with_heartbeat "PostgreSQL contrib make install" make install
+  (
+    cd "$build_dir"
+    run_with_heartbeat "PostgreSQL configure" ./configure --prefix="$PG_PREFIX" "${configure_options[@]}"
+    run_with_heartbeat "PostgreSQL make" make -j"$(nproc)"
+    run_with_heartbeat "PostgreSQL make install" make install
+    cd contrib
+    run_with_heartbeat "PostgreSQL contrib make" make -j"$(nproc)"
+    run_with_heartbeat "PostgreSQL contrib make install" make install
+  )
   chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX"
 }
 
@@ -230,16 +246,49 @@ install_pg_probackup() {
     mkdir -p "$pg_src_dir"
     tar -xzf "$pg_tgz" -C "$pg_src_dir" --strip-components=1
   fi
-  cd "$build_dir"
-  run_with_heartbeat "pg_probackup make" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir"
-  run_with_heartbeat "pg_probackup make install" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir" install
+  (
+    cd "$build_dir"
+    run_with_heartbeat "pg_probackup make" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir"
+    run_with_heartbeat "pg_probackup make install" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir" install
+  )
   local installed_binary="$PG_PREFIX/bin/pg_probackup"
   [[ -x "$installed_binary" ]] || die "pg_probackup build did not produce $installed_binary"
   mkdir -p "$(dirname "$PG_PROBACKUP_BINARY")"
   ln -sf "$installed_binary" "$PG_PROBACKUP_BINARY"
 }
 
+install_pg_cron() {
+  if [[ -f "$PG_PREFIX/share/extension/pg_cron.control" ]]; then
+    log "pg_cron already installed under $PG_PREFIX"
+    return 0
+  fi
+
+  local tgz="$PROJECT_DIR/packages/pg_cron-${PG_CRON_VERSION}.tar.gz"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  [[ -x "$PG_PREFIX/bin/pg_config" ]] || die "missing $PG_PREFIX/bin/pg_config; install PostgreSQL first"
+
+  log "build pg_cron $PG_CRON_VERSION"
+  local build_dir="/tmp/pg_cron-${PG_CRON_VERSION}-build"
+  rm -rf "$build_dir"
+  mkdir -p "$build_dir"
+  tar -xzf "$tgz" -C "$build_dir" --strip-components=1
+  (
+    cd "$build_dir"
+    run_with_heartbeat "pg_cron make" make PG_CONFIG="$PG_PREFIX/bin/pg_config"
+    run_with_heartbeat "pg_cron make install" make PG_CONFIG="$PG_PREFIX/bin/pg_config" install
+  )
+}
+
 install_patroni() {
+  cd "$PROJECT_DIR"
+
+  if [[ -x /opt/patroni-venv/bin/patroni ]] && /opt/patroni-venv/bin/patroni --version 2>/dev/null | grep -q "$PATRONI_VERSION"; then
+    log "Patroni $PATRONI_VERSION already installed"
+    ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
+    ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
+    return 0
+  fi
+
   log "install Patroni venv"
   if python3 -m venv /opt/patroni-venv >/dev/null 2>&1; then
     :
@@ -389,9 +438,10 @@ bootstrap:
         hot_standby: '${PGCONF_HOT_STANDBY}'
         hot_standby_feedback: '${PGCONF_HOT_STANDBY_FEEDBACK}'
         password_encryption: ${PGCONF_PASSWORD_ENCRYPTION}
-        shared_preload_libraries: ${PGCONF_SHARED_PRELOAD_LIBRARIES}
+        shared_preload_libraries: '${PGCONF_SHARED_PRELOAD_LIBRARIES}'
         pg_stat_statements.max: ${PGCONF_PG_STAT_STATEMENTS_MAX}
         pg_stat_statements.track: ${PGCONF_PG_STAT_STATEMENTS_TRACK}
+        cron.database_name: ${PGCONF_CRON_DATABASE_NAME}
         logging_collector: '${PGCONF_LOGGING_COLLECTOR}'
         log_directory: ${PGCONF_LOG_DIRECTORY}
         log_filename: ${PGCONF_LOG_FILENAME}
@@ -567,12 +617,14 @@ start_services() {
 }
 
 main() {
+  require_database_passwords
   install_prereqs
   configure_os
   configure_firewall
   create_users_dirs
   write_postgres_env
   install_postgres
+  install_pg_cron
   install_etcd
   install_pg_probackup
   install_patroni

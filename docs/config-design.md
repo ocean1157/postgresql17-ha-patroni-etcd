@@ -38,6 +38,18 @@ nosync="false"
 
 系统编译依赖统一在部署时通过 yum/dnf 安装，Patroni、psycopg2、etcd 客户端等 Python 依赖统一通过 pip 在线安装。
 
+## 部署并发和复跑
+
+`[deploy] parallel_jobs` 控制部署并发度：
+
+- `parallel_jobs="0"`：默认值，按节点数量自动并发。
+- `parallel_jobs="1"`：串行部署，适合 yum 源不稳定或虚拟机磁盘压力较大时排障。
+- `parallel_jobs="2"`：限制最多两个节点同时执行。
+
+`deploy.sh` 会并发执行项目分发、节点安装、systemd enable、etcd 启动、Patroni 启动和服务验证。etcd 健康检查和 Patroni 集群检查仍然按顺序等待，因为这些步骤依赖集群状态。
+
+脚本支持复跑：已安装的 PostgreSQL、etcd、pg_probackup 会跳过重复安装；系统 RPM 依赖会先检查缺失包，只安装缺失项；Patroni 版本一致时会跳过 pip 安装。yum/dnf 安装失败时会清理缓存并自动重试一次。
+
 ## 安装耗时说明
 
 安装慢通常不是 shell 本身造成的，主要耗时点是：
@@ -186,3 +198,16 @@ changed with `patronictl edit-config` or by reinitializing the DCS state.
 - `incremental_mode="PAGE"`：非全量日做 PAGE 增量备份。
 
 备份脚本只会在当前 Patroni Leader 上执行，Replica 节点会自动跳过。首次运行如果没有发现有效历史备份，即使当天不是周日，也会自动切换为 FULL，避免第一次就执行增量失败。PostgreSQL 的 `archive_command` 使用 `pg_probackup archive-push` 归档 WAL。
+
+## pg_cron 扩展
+
+`[pg_cron] version` 控制 pg_cron 源码包版本，当前默认使用 GitHub Release 页面标记的 Latest 版本 `1.6.7`。安装流程会在每个 PostgreSQL 节点上编译安装 pg_cron 扩展文件。
+
+pg_cron 必须出现在 `shared_preload_libraries` 中，因此默认配置为：
+
+```ini
+shared_preload_libraries="pg_cron,pg_stat_statements"
+cron.database_name="postgres"
+```
+
+集群启动并选出 Leader 后，`deploy.sh` 会连接当前 Leader，在 `cron.database_name` 指定的数据库中执行 `CREATE EXTENSION IF NOT EXISTS pg_cron;`。

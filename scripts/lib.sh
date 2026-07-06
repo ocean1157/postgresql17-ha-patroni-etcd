@@ -71,6 +71,7 @@ map_config_aliases() {
   SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
   SSH_KEY="${DEPLOY_SSH_KEY:-}"
   SSH_PORT="${DEPLOY_SSH_PORT:-22}"
+  DEPLOY_PARALLEL_JOBS="${DEPLOY_PARALLEL_JOBS:-0}"
 
   OS_TIMEZONE="${OS_TIMEZONE:-Asia/Shanghai}"
   OS_ENABLE_CHRONY="${OS_ENABLE_CHRONY:-true}"
@@ -90,11 +91,11 @@ map_config_aliases() {
   PG_BACKUP="${POSTGRESQL_INSTALL_BACKUP_DIR:-${POSTGRESQL_BACKUP_DIR:-/pgbak}}"
   PG_CONFIGURE_OPTIONS="${POSTGRESQL_INSTALL_CONFIGURE_OPTIONS:---with-openssl --with-zlib --with-uuid=e2fs --with-python}"
   POSTGRES_SUPERUSER="${POSTGRESQL_AUTH_SUPERUSER:-${POSTGRESQL_SUPERUSER:-postgres}}"
-  POSTGRES_SUPERPASS="${POSTGRESQL_AUTH_SUPERPASS:-${POSTGRESQL_SUPERPASS:-ChangeMe_pg17_super}}"
+  POSTGRES_SUPERPASS="${POSTGRESQL_AUTH_SUPERPASS:-${POSTGRESQL_SUPERPASS:-}}"
   REPLICATION_USER="${POSTGRESQL_AUTH_REPLICATION_USER:-${POSTGRESQL_REPLICATION_USER:-replicator}}"
-  REPLICATION_PASS="${POSTGRESQL_AUTH_REPLICATION_PASS:-${POSTGRESQL_REPLICATION_PASS:-ChangeMe_pg17_repl}}"
+  REPLICATION_PASS="${POSTGRESQL_AUTH_REPLICATION_PASS:-${POSTGRESQL_REPLICATION_PASS:-}}"
   REWIND_USER="${POSTGRESQL_AUTH_REWIND_USER:-${POSTGRESQL_REWIND_USER:-rewind}}"
-  REWIND_PASS="${POSTGRESQL_AUTH_REWIND_PASS:-${POSTGRESQL_REWIND_PASS:-ChangeMe_pg17_rewind}}"
+  REWIND_PASS="${POSTGRESQL_AUTH_REWIND_PASS:-${POSTGRESQL_REWIND_PASS:-}}"
   PGCONF_LISTEN_ADDRESSES="${POSTGRESQL_CONF_LISTEN_ADDRESSES:-*}"
   PGCONF_MAX_CONNECTIONS="${POSTGRESQL_CONF_MAX_CONNECTIONS:-300}"
   PGCONF_SHARED_BUFFERS="${POSTGRESQL_CONF_SHARED_BUFFERS:-4GB}"
@@ -114,6 +115,7 @@ map_config_aliases() {
   PGCONF_SHARED_PRELOAD_LIBRARIES="${POSTGRESQL_CONF_SHARED_PRELOAD_LIBRARIES:-pg_stat_statements}"
   PGCONF_PG_STAT_STATEMENTS_MAX="${POSTGRESQL_CONF_PG_STAT_STATEMENTS_MAX:-10000}"
   PGCONF_PG_STAT_STATEMENTS_TRACK="${POSTGRESQL_CONF_PG_STAT_STATEMENTS_TRACK:-all}"
+  PGCONF_CRON_DATABASE_NAME="${POSTGRESQL_CONF_CRON_DATABASE_NAME:-${PGDATABASE}}"
   PGCONF_LOGGING_COLLECTOR="${POSTGRESQL_CONF_LOGGING_COLLECTOR:-on}"
   PGCONF_LOG_DIRECTORY="${POSTGRESQL_CONF_LOG_DIRECTORY:-log}"
   PGCONF_LOG_FILENAME="${POSTGRESQL_CONF_LOG_FILENAME:-postgresql-%Y-%m-%d.log}"
@@ -134,6 +136,7 @@ map_config_aliases() {
   PG_PROBACKUP_INCREMENTAL_MODE="${PG_PROBACKUP_INCREMENTAL_MODE:-PAGE}"
   PG_PROBACKUP_BACKUP_USER="${PG_PROBACKUP_BACKUP_USER:-${POSTGRES_SUPERUSER}}"
   PGCONF_ARCHIVE_COMMAND="${POSTGRESQL_CONF_ARCHIVE_COMMAND:-${PG_PROBACKUP_BINARY} archive-push -B ${PG_PROBACKUP_BACKUP_DIR} --instance ${PG_PROBACKUP_INSTANCE} --wal-file-path=%p --wal-file-name=%f}"
+  PG_CRON_VERSION="${PG_CRON_VERSION:-1.6.7}"
 
   ETCD_VERSION="${ETCD_VERSION:-v3.6.12}"
   ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-2379}"
@@ -164,6 +167,12 @@ map_config_aliases() {
   csv_to_array PG_NODES "${POSTGRESQL_NODES:-pg01:10.0.0.121,pg02:10.0.0.122,pg03:10.0.0.123}"
   csv_to_array ETCD_NODES "${ETCD_NODES:-${POSTGRESQL_NODES:-pg01:10.0.0.121,pg02:10.0.0.122,pg03:10.0.0.123}}"
   CLUSTER_NODES=("${PG_NODES[@]}")
+}
+
+require_database_passwords() {
+  [[ -n "$POSTGRES_SUPERPASS" ]] || die "config [postgresql.auth] superpass 不能为空"
+  [[ -n "$REPLICATION_PASS" ]] || die "config [postgresql.auth] replication_pass 不能为空"
+  [[ -n "$REWIND_PASS" ]] || die "config [postgresql.auth] rewind_pass 不能为空"
 }
 
 node_tag_value() {
@@ -292,15 +301,33 @@ current_ip() {
 
 pkg_install() {
   if command -v dnf >/dev/null 2>&1; then
-    dnf install -y "$@"
+    rpm_repo_install dnf "$@"
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y "$@"
+    rpm_repo_install yum "$@"
   elif command -v apt-get >/dev/null 2>&1; then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
   else
     die "no supported package manager found"
   fi
+}
+
+rpm_repo_install() {
+  local manager="$1"
+  shift
+  log "使用 ${manager} 安装软件包：$*"
+  if "$manager" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
+    return 0
+  fi
+
+  log "${manager} 安装失败，可能是 DNS、镜像仓库或缓存元数据异常；清理缓存后重试一次"
+  "$manager" clean all || true
+  "$manager" makecache -y || true
+  if "$manager" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
+    return 0
+  fi
+
+  die "${manager} 安装依赖失败。请检查节点 DNS、/etc/yum.repos.d 仓库地址，以及是否能解析并访问镜像站"
 }
 
 rpm_prereq_packages() {

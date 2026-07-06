@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -6,6 +9,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_DIR/scripts/lib.sh"
 load_config
 LOCAL_IP="$(current_ip)"
+require_database_passwords
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 
@@ -31,6 +35,20 @@ run_remote() {
   "${ssh_base[@]}" "${SSH_USER}@${ip}" "$@"
 }
 
+run_remote_retry() {
+  local ip="$1"
+  shift
+  local attempt
+  for attempt in 1 2 3; do
+    if run_remote "$ip" "$@"; then
+      return 0
+    fi
+    log "节点 $ip 远程命令第 ${attempt} 次执行失败，5 秒后重试"
+    sleep 5
+  done
+  return 1
+}
+
 node_project_dir() {
   local ip="$1"
   if [[ "$ip" == "$LOCAL_IP" ]]; then
@@ -47,48 +65,141 @@ copy_project() {
     return 0
   fi
   log "copy project to $ip:$INSTALL_ROOT"
-  run_remote "$ip" "mkdir -p '$INSTALL_ROOT'"
-  tar -C "$PROJECT_DIR" -czf - . | "${ssh_base[@]}" "${SSH_USER}@${ip}" "tar -C '$INSTALL_ROOT' -xzf -"
+  run_remote_retry "$ip" "mkdir -p '$INSTALL_ROOT'"
+  tar -C "$PROJECT_DIR" \
+    --exclude='./.git' \
+    --exclude='./.idea' \
+    --exclude='./.codex_remote.py' \
+    --exclude='./deploy-logs' \
+    -czf - . | "${ssh_base[@]}" "${SSH_USER}@${ip}" "tar -C '$INSTALL_ROOT' -xzf -"
+}
+
+install_node() {
+  local ip="$1" remote_project_dir
+  remote_project_dir="$(node_project_dir "$ip")"
+  log "install node $ip"
+  run_remote_retry "$ip" "cd '$remote_project_dir' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
+}
+
+enable_units() {
+  local ip="$1"
+  log "enable systemd units on $ip"
+  run_remote_retry "$ip" "systemctl daemon-reload && systemctl enable etcd.service patroni.service"
+}
+
+start_etcd_node() {
+  local ip="$1"
+  log "start etcd on $ip"
+  run_remote_retry "$ip" "systemctl reset-failed etcd.service || true; systemctl start --no-block etcd.service"
+}
+
+start_patroni_node() {
+  local ip="$1"
+  log "start patroni on $ip"
+  run_remote_retry "$ip" "systemctl reset-failed patroni.service || true; systemctl start patroni.service"
+}
+
+verify_node() {
+  local ip="$1"
+  log "verify systemd services on $ip"
+  run_remote_retry "$ip" "systemctl is-enabled etcd.service patroni.service && systemctl is-active etcd.service patroni.service"
+}
+
+create_database_extensions() {
+  log "初始化 PostgreSQL 扩展 pg_cron 和 pg_stat_statements"
+  run_remote_retry "$(primary_ip)" "leader_ip=\$(patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
+    test -n \"\$leader_ip\"; \
+    PGPASSWORD='$POSTGRES_SUPERPASS' '$PG_PREFIX/bin/psql' -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U '$POSTGRES_SUPERUSER' -d '$PGCONF_CRON_DATABASE_NAME' -v ON_ERROR_STOP=1 \
+      -c 'CREATE EXTENSION IF NOT EXISTS pg_cron;' \
+      -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;' \
+      -c \"SELECT extname, extversion FROM pg_extension WHERE extname IN ('pg_cron','pg_stat_statements') ORDER BY extname;\""
+}
+
+apply_patroni_runtime_config() {
+  log "写入 Patroni 动态配置，确保 pg_cron 预加载参数对复跑生效"
+  run_remote_retry "$(primary_ip)" "patronictl -c '$PATRONI_HOME/patroni.yml' edit-config --force \
+    --set 'postgresql.parameters.shared_preload_libraries=$PGCONF_SHARED_PRELOAD_LIBRARIES' \
+    --set 'postgresql.parameters.cron.database_name=$PGCONF_CRON_DATABASE_NAME'"
+
+  log "重启 Patroni 管理的 PostgreSQL 实例以加载 shared_preload_libraries"
+  run_remote_retry "$(primary_ip)" "patronictl -c '$PATRONI_HOME/patroni.yml' restart --force '$SCOPE'"
+
+  log "wait for Patroni cluster after runtime config"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+}
+
+parallel_limit() {
+  local node_count configured
+  node_count="$(all_node_ips | wc -l | tr -d ' ')"
+  configured="${DEPLOY_PARALLEL_JOBS:-0}"
+  if [[ "$configured" =~ ^[0-9]+$ ]] && [[ "$configured" -gt 0 ]]; then
+    printf '%s\n' "$configured"
+  else
+    printf '%s\n' "$node_count"
+  fi
+}
+
+run_parallel_phase() {
+  local phase="$1" func="$2" limit running=0 ip pid failed=0
+  shift 2
+  local -a pids=()
+  local -A pid_ip=()
+  limit="$(parallel_limit)"
+  log "${phase} 开始，并发度=${limit}"
+
+  for ip in "$@"; do
+    (
+      "$func" "$ip"
+    ) &
+    pid=$!
+    pids+=("$pid")
+    pid_ip["$pid"]="$ip"
+    running=$((running + 1))
+
+    if [[ "$running" -ge "$limit" ]]; then
+      local first_pid="${pids[0]}"
+      if ! wait "$first_pid"; then
+        log "${phase} 节点 ${pid_ip[$first_pid]} 执行失败"
+        failed=1
+      fi
+      unset "pid_ip[$first_pid]"
+      pids=("${pids[@]:1}")
+      running=$((running - 1))
+    fi
+  done
+
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+      log "${phase} 节点 ${pid_ip[$pid]} 执行失败"
+      failed=1
+    fi
+  done
+
+  [[ "$failed" -eq 0 ]] || die "${phase} 失败"
+  log "${phase} 完成"
 }
 
 main() {
-  local ip remote_project_dir
+  local ip
+  local -a node_ips=()
+  mapfile -t node_ips < <(all_node_ips)
 
-  for ip in $(all_node_ips); do
-    copy_project "$ip"
-  done
-
-  for ip in $(all_node_ips); do
-    remote_project_dir="$(node_project_dir "$ip")"
-    log "install node $ip"
-    run_remote "$ip" "cd '$remote_project_dir' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
-  done
-
-  for ip in $(all_node_ips); do
-    log "enable systemd units on $ip"
-    run_remote "$ip" "systemctl daemon-reload && systemctl enable etcd.service patroni.service"
-  done
-
-  for ip in $(all_node_ips); do
-    log "start etcd on $ip"
-    run_remote "$ip" "systemctl reset-failed etcd.service || true; systemctl start --no-block etcd.service"
-  done
+  run_parallel_phase "分发项目" copy_project "${node_ips[@]}"
+  run_parallel_phase "安装节点" install_node "${node_ips[@]}"
+  run_parallel_phase "启用 systemd 单元" enable_units "${node_ips[@]}"
+  run_parallel_phase "启动 etcd" start_etcd_node "${node_ips[@]}"
 
   log "wait for etcd health"
-  run_remote "$(primary_ip)" "for i in {1..60}; do env -u ETCDCTL_ENDPOINTS etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..90}; do env -u ETCDCTL_ENDPOINTS etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
 
-  for ip in $(all_node_ips); do
-    log "start patroni on $ip"
-    run_remote "$ip" "systemctl reset-failed patroni.service || true; systemctl start patroni.service"
-  done
+  run_parallel_phase "启动 patroni" start_patroni_node "${node_ips[@]}"
 
   log "wait for Patroni cluster"
-  run_remote "$(primary_ip)" "for i in {1..90}; do patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
-  for ip in $(all_node_ips); do
-    log "verify systemd services on $ip"
-    run_remote "$ip" "systemctl is-enabled etcd.service patroni.service && systemctl is-active etcd.service patroni.service"
-  done
+  apply_patroni_runtime_config
+  create_database_extensions
+  run_parallel_phase "验证服务" verify_node "${node_ips[@]}"
 
   log "cluster deployment commands finished"
   log "check with: su - postgres -c 'patronictl -c /etc/patroni/patroni.yml list'"

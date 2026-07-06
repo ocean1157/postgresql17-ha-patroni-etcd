@@ -7,6 +7,8 @@
 - PostgreSQL 17.10: 三节点 Patroni 管理的一主两备流复制集群。
 - Patroni 3.0.4: 负责 PostgreSQL 生命周期、主备选举、故障切换、复制槽和动态参数管理。该版本兼容 CentOS 7 默认可安装的 Python 3.6。
 - etcd 3.6.12: 三节点 DCS 仲裁，使用 v3 API。
+- pg_probackup 2.5.16: WAL 归档和定时备份。
+- pg_cron 1.6.7: 数据库内定时任务扩展。
 - VIP: 可选，主节点回调自动绑定/释放虚拟 IP。
 
 ## 目录
@@ -22,6 +24,12 @@ systemd/                 systemd 模板
 ## 快速开始
 
 1. 修改 [config/cluster.env](config/cluster.env)，确认节点 IP、主机名、VIP、网卡、密码或 SSH key。
+
+   仓库中的 `cluster.env` 不保存真实密码。部署前必须在本地填写：
+   - `[deploy] ssh_password` 或 `ssh_key`
+   - `[postgresql.auth] superpass`
+   - `[postgresql.auth] replication_pass`
+   - `[postgresql.auth] rewind_pass`
 2. 准备安装包：
 
 ```bash
@@ -37,7 +45,7 @@ cd /path/to/postgresql17-ha-patroni-etcd
 bash scripts/deploy.sh
 ```
 
-`deploy.sh` 会把项目分发到其他节点，并在三台机器上执行节点安装。若 `SSH_PASSWORD` 非空且未配置免密 SSH，脚本会尝试安装/使用 `sshpass`。
+`deploy.sh` 会把项目分发到其他节点，并在三台机器上执行节点安装。若 `ssh_password` 非空且未配置免密 SSH，脚本会尝试安装/使用 `sshpass`。
 
 部署过程会显式写入并启用 `etcd.service`、`patroni.service`，按如下顺序启动：
 
@@ -70,4 +78,4 @@ bash scripts/check-cluster.sh
 
 ## 安装包说明
 
-[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-packages.sh` 会把源码包下载为 `packages/postgresql-17.10.tar.gz`，同时下载 etcd Linux 包。Patroni 通过 Python venv + pip 安装，默认版本见 `config/cluster.env`；若生产环境不能访问外网，请提前把 Python wheels 放入 `packages/wheels/`。
+[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-packages.sh` 会下载 PostgreSQL、etcd、pg_probackup、pg_cron 四类核心软件包。系统编译依赖通过 yum/dnf 安装，Patroni 通过 Python venv + pip 在线安装。
