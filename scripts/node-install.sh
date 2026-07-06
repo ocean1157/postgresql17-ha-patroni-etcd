@@ -18,10 +18,39 @@ is_true() {
   [[ "${1,,}" == "true" || "$1" == "1" || "${1,,}" == "yes" || "${1,,}" == "on" ]]
 }
 
+run_with_heartbeat() {
+  local label="$1"
+  shift
+  log "${label} start"
+  "$@" &
+  local pid=$!
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    sleep 30
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      log "${label} still running, pid=$pid"
+    fi
+  done
+  wait "$pid"
+  log "${label} finished"
+}
+
 install_prereqs() {
   log "install prerequisites"
+  local rpm_dir
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-    pkg_install gcc make bison flex readline-devel zlib-devel openssl-devel libuuid-devel libicu-devel perl tar gzip python3 python3-devel python3-pip sudo chrony
+    rpm_dir="$(rpm_package_dir)"
+    if compgen -G "${rpm_dir}/*.rpm" >/dev/null; then
+      log "install prerequisites from local rpm dir: $rpm_dir"
+      if command -v dnf >/dev/null 2>&1; then
+        dnf install -y --disablerepo='*' "${rpm_dir}"/*.rpm
+      else
+        yum install -y --disablerepo='*' "${rpm_dir}"/*.rpm
+      fi
+    else
+      log "local rpm dir is empty, install prerequisites from OS repositories"
+      mapfile -t prereq_pkgs < <(rpm_prereq_packages)
+      pkg_install "${prereq_pkgs[@]}"
+    fi
   elif command -v apt-get >/dev/null 2>&1; then
     pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
   else
@@ -115,12 +144,12 @@ configure_firewall() {
 create_users_dirs() {
   log "create postgres user and directories"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
-  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_WAL_ARCHIVE" "$PG_BACKUP" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
+  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_WAL_ARCHIVE" "$PG_BACKUP" "$PG_PROBACKUP_BACKUP_DIR" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
   mkdir -p /var/run/postgresql
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$(dirname "$PG_DATA")" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PATRONI_LOG_DIR"
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$(dirname "$PG_DATA")" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR"
   chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
   chmod 775 /var/run/postgresql
-  chmod 700 "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP"
+  chmod 700 "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PG_PROBACKUP_BACKUP_DIR"
 }
 
 write_postgres_env() {
@@ -138,7 +167,9 @@ export PGUSER=${POSTGRES_SUPERUSER}
 export PGHOST=/var/run/postgresql
 export PATRONI_CONFIG=${PATRONI_HOME}/patroni.yml
 export ETCDCTL_ENDPOINTS=$(etcd_client_endpoints)
-export PATH=\$PGHOME/bin:/opt/patroni-venv/bin:${ETCD_BIN_DIR}:\$PATH
+export PG_PROBACKUP=${PG_PROBACKUP_BINARY}
+export PG_PROBACKUP_BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
+export PATH=\$PGHOME/bin:/opt/patroni-venv/bin:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
 export LD_LIBRARY_PATH=\$PGHOME/lib:\${LD_LIBRARY_PATH:-}
 EOF
   chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "${pg_home}/.pgev"
@@ -162,12 +193,14 @@ install_postgres() {
   mkdir -p "$build_dir"
   tar -xzf "$tgz" -C "$build_dir" --strip-components=1
   cd "$build_dir"
-  ./configure --prefix="$PG_PREFIX" --with-openssl --with-zlib --with-uuid=e2fs
-  make -j"$(nproc)"
-  make install
+  # shellcheck disable=SC2206
+  local configure_options=( $PG_CONFIGURE_OPTIONS )
+  run_with_heartbeat "PostgreSQL configure" ./configure --prefix="$PG_PREFIX" "${configure_options[@]}"
+  run_with_heartbeat "PostgreSQL make" make -j"$(nproc)"
+  run_with_heartbeat "PostgreSQL make install" make install
   cd contrib
-  make -j"$(nproc)"
-  make install
+  run_with_heartbeat "PostgreSQL contrib make" make -j"$(nproc)"
+  run_with_heartbeat "PostgreSQL contrib make install" make install
   chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX"
 }
 
@@ -189,6 +222,35 @@ install_etcd() {
   install -m 0755 "$tmp/etcdutl" "$ETCD_BIN_DIR/etcdutl"
 }
 
+install_pg_probackup() {
+  if [[ -x "$PG_PROBACKUP_BINARY" ]]; then
+    log "pg_probackup already installed at $PG_PROBACKUP_BINARY"
+    return 0
+  fi
+  local tgz="$PROJECT_DIR/packages/pg_probackup-${PG_PROBACKUP_VERSION}.tar.gz"
+  local pg_tgz="$PROJECT_DIR/packages/postgresql-${POSTGRES_VERSION}.tar.gz"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  [[ -f "$pg_tgz" ]] || die "missing $pg_tgz; run scripts/download-packages.sh first"
+  log "build pg_probackup $PG_PROBACKUP_VERSION"
+  local build_dir="/tmp/pg_probackup-${PG_PROBACKUP_VERSION}-build"
+  local pg_src_dir="/tmp/postgresql-${POSTGRES_VERSION}-src-for-pg_probackup"
+  rm -rf "$build_dir"
+  mkdir -p "$build_dir"
+  tar -xzf "$tgz" -C "$build_dir" --strip-components=1
+  if [[ ! -f "$pg_src_dir/src/include/portability/instr_time.h" ]]; then
+    rm -rf "$pg_src_dir"
+    mkdir -p "$pg_src_dir"
+    tar -xzf "$pg_tgz" -C "$pg_src_dir" --strip-components=1
+  fi
+  cd "$build_dir"
+  run_with_heartbeat "pg_probackup make" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir"
+  run_with_heartbeat "pg_probackup make install" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir" install
+  local installed_binary="$PG_PREFIX/bin/pg_probackup"
+  [[ -x "$installed_binary" ]] || die "pg_probackup build did not produce $installed_binary"
+  mkdir -p "$(dirname "$PG_PROBACKUP_BINARY")"
+  ln -sf "$installed_binary" "$PG_PROBACKUP_BINARY"
+}
+
 install_patroni() {
   log "install Patroni venv"
   if python3 -m venv /opt/patroni-venv >/dev/null 2>&1; then
@@ -197,11 +259,15 @@ install_patroni() {
     python3 -m pip install --upgrade --user virtualenv
     python3 -m virtualenv /opt/patroni-venv
   fi
-  if compgen -G "$PROJECT_DIR/packages/wheels/*.whl" >/dev/null; then
-    /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+  if compgen -G "$PROJECT_DIR/packages/wheels/*" >/dev/null; then
+    log "install Patroni Python packages from local wheels"
+    env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" wheel >/dev/null 2>&1 || true
+    run_with_heartbeat "Patroni pip install offline" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   else
-    /opt/patroni-venv/bin/pip install --upgrade "pip<22"
-    /opt/patroni-venv/bin/pip install "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+    log "local wheels are missing, install Patroni Python packages from network"
+    run_with_heartbeat "pip upgrade" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 --upgrade "pip<22"
+    env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 wheel >/dev/null 2>&1 || true
+    run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   fi
   ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
   ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
@@ -399,6 +465,76 @@ EOF
   chmod 0600 "$PATRONI_HOME/patroni.yml"
 }
 
+configure_pg_probackup() {
+  log "configure pg_probackup repository and cron"
+  mkdir -p "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
+
+  if [[ ! -f "$PG_PROBACKUP_BACKUP_DIR/backups/${PG_PROBACKUP_INSTANCE}/pg_probackup.conf" ]]; then
+    su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY init -B '$PG_PROBACKUP_BACKUP_DIR'" >/dev/null 2>&1 || true
+    su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY add-instance -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' -D '$PG_DATA'" >/dev/null 2>&1 || true
+  fi
+
+  su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY set-config -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' --retention-redundancy='$PG_PROBACKUP_RETENTION_REDUNDANCY' --retention-window='$PG_PROBACKUP_RETENTION_WINDOW'" >/dev/null 2>&1 || true
+
+  cat >/usr/local/bin/pg_ha_probackup.sh <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PGHOME=${PG_PREFIX}
+export PGDATA=${PG_DATA}
+export PGPORT=${POSTGRES_PORT}
+export PGDATABASE=${PGDATABASE}
+export PGUSER=${PG_PROBACKUP_BACKUP_USER}
+export PGHOST=/var/run/postgresql
+export PATH=${PG_PREFIX}/bin:/opt/patroni-venv/bin:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
+export LD_LIBRARY_PATH=${PG_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
+
+LOG_DIR=/var/log/pg_probackup
+BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
+INSTANCE=${PG_PROBACKUP_INSTANCE}
+FULL_DAY=${PG_PROBACKUP_FULL_BACKUP_DAY}
+INCREMENTAL_MODE=${PG_PROBACKUP_INCREMENTAL_MODE}
+BACKUP_USER=${PG_PROBACKUP_BACKUP_USER}
+PG_PROBACKUP_BIN=${PG_PROBACKUP_BINARY}
+
+mkdir -p "\$LOG_DIR"
+exec >>"\$LOG_DIR/pg_probackup-\$(date +%F).log" 2>&1
+
+echo "[\$(date '+%F %T')] pg_probackup job start on \$(hostname)"
+if ! patronictl -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="${MY_NAME}" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
+  echo "[\$(date '+%F %T')] current node is not Patroni leader, skip backup"
+  exit 0
+fi
+
+if [[ "\$(date +%w)" == "\$FULL_DAY" ]]; then
+  BACKUP_MODE=FULL
+else
+  BACKUP_MODE=\$INCREMENTAL_MODE
+fi
+
+if ! "\$PG_PROBACKUP_BIN" show -B "\$BACKUP_DIR" --instance "\$INSTANCE" 2>/dev/null | grep -Eq '^[[:space:]]+[A-Z0-9]+[[:space:]]+(FULL|PAGE|DELTA|PTRACK)[[:space:]]'; then
+  echo "[\$(date '+%F %T')] no valid previous backup found, switch to FULL backup"
+  BACKUP_MODE=FULL
+fi
+
+echo "[\$(date '+%F %T')] run \$BACKUP_MODE backup"
+"\$PG_PROBACKUP_BIN" backup -B "\$BACKUP_DIR" --instance "\$INSTANCE" -b "\$BACKUP_MODE" -U "\$BACKUP_USER" -d ${PGDATABASE} --stream --delete-expired --delete-wal
+"\$PG_PROBACKUP_BIN" delete -B "\$BACKUP_DIR" --instance "\$INSTANCE" --delete-expired --delete-wal
+echo "[\$(date '+%F %T')] pg_probackup job finished"
+EOF
+  chmod 0755 /usr/local/bin/pg_ha_probackup.sh
+  chown root:root /usr/local/bin/pg_ha_probackup.sh
+
+  cat >/etc/cron.d/pg-probackup-ha <<EOF
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${POSTGRES_OS_USER} /usr/local/bin/pg_ha_probackup.sh
+EOF
+  chmod 0644 /etc/cron.d/pg-probackup-ha
+  systemctl enable --now crond >/dev/null 2>&1 || true
+}
+
 write_systemd() {
   cat >/etc/systemd/system/patroni.service <<EOF
 [Unit]
@@ -456,10 +592,12 @@ main() {
   write_postgres_env
   install_postgres
   install_etcd
+  install_pg_probackup
   install_patroni
   write_etcd_config
   write_vip_callback
   write_patroni_config
+  configure_pg_probackup
   write_systemd
   configure_profile
   start_services

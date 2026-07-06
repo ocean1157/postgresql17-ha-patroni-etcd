@@ -88,6 +88,7 @@ map_config_aliases() {
   PG_DATA="${POSTGRESQL_INSTALL_DATA_DIR:-${POSTGRESQL_DATA_DIR:-/pgdata/pg17}}"
   PG_WAL_ARCHIVE="${POSTGRESQL_INSTALL_WAL_ARCHIVE:-${POSTGRESQL_WAL_ARCHIVE:-/pgwal/archive_wals}}"
   PG_BACKUP="${POSTGRESQL_INSTALL_BACKUP_DIR:-${POSTGRESQL_BACKUP_DIR:-/pgbak}}"
+  PG_CONFIGURE_OPTIONS="${POSTGRESQL_INSTALL_CONFIGURE_OPTIONS:---with-openssl --with-zlib --with-uuid=e2fs --with-python}"
   POSTGRES_SUPERUSER="${POSTGRESQL_AUTH_SUPERUSER:-${POSTGRESQL_SUPERUSER:-postgres}}"
   POSTGRES_SUPERPASS="${POSTGRESQL_AUTH_SUPERPASS:-${POSTGRESQL_SUPERPASS:-ChangeMe_pg17_super}}"
   REPLICATION_USER="${POSTGRESQL_AUTH_REPLICATION_USER:-${POSTGRESQL_REPLICATION_USER:-replicator}}"
@@ -119,8 +120,20 @@ map_config_aliases() {
   PGCONF_LOG_LINE_PREFIX="${POSTGRESQL_CONF_LOG_LINE_PREFIX:-%m [%p] %u@%d %r %a }"
   PGCONF_LOG_MIN_DURATION_STATEMENT="${POSTGRESQL_CONF_LOG_MIN_DURATION_STATEMENT:-1000}"
   PGCONF_ARCHIVE_MODE="${POSTGRESQL_CONF_ARCHIVE_MODE:-on}"
-  PGCONF_ARCHIVE_COMMAND="${POSTGRESQL_CONF_ARCHIVE_COMMAND:-test ! -f ${PG_WAL_ARCHIVE}/%f && cp %p ${PG_WAL_ARCHIVE}/%f}"
   PGCONF_UNIX_SOCKET_DIRECTORIES="${POSTGRESQL_CONF_UNIX_SOCKET_DIRECTORIES:-/var/run/postgresql}"
+
+  PG_PROBACKUP_VERSION="${PG_PROBACKUP_VERSION:-2.5.16}"
+  PG_PROBACKUP_BACKUP_DIR="${PG_PROBACKUP_BACKUP_DIR:-${PG_BACKUP}/pg_probackup}"
+  PG_PROBACKUP_INSTANCE="${PG_PROBACKUP_INSTANCE:-${SCOPE}}"
+  PG_PROBACKUP_BINARY="${PG_PROBACKUP_BINARY:-/usr/local/bin/pg_probackup}"
+  PG_PROBACKUP_RETENTION_REDUNDANCY="${PG_PROBACKUP_RETENTION_REDUNDANCY:-4}"
+  PG_PROBACKUP_RETENTION_WINDOW="${PG_PROBACKUP_RETENTION_WINDOW:-30}"
+  PG_PROBACKUP_CRON_MINUTE="${PG_PROBACKUP_CRON_MINUTE:-30}"
+  PG_PROBACKUP_CRON_HOUR="${PG_PROBACKUP_CRON_HOUR:-1}"
+  PG_PROBACKUP_FULL_BACKUP_DAY="${PG_PROBACKUP_FULL_BACKUP_DAY:-0}"
+  PG_PROBACKUP_INCREMENTAL_MODE="${PG_PROBACKUP_INCREMENTAL_MODE:-PAGE}"
+  PG_PROBACKUP_BACKUP_USER="${PG_PROBACKUP_BACKUP_USER:-${POSTGRES_SUPERUSER}}"
+  PGCONF_ARCHIVE_COMMAND="${POSTGRESQL_CONF_ARCHIVE_COMMAND:-${PG_PROBACKUP_BINARY} archive-push -B ${PG_PROBACKUP_BACKUP_DIR} --instance ${PG_PROBACKUP_INSTANCE} --wal-file-path=%p --wal-file-name=%f}"
 
   ETCD_VERSION="${ETCD_VERSION:-v3.6.12}"
   ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-2379}"
@@ -288,4 +301,51 @@ pkg_install() {
   else
     die "no supported package manager found"
   fi
+}
+
+rpm_package_id() {
+  local os_id="linux" version_id="" major arch
+  arch="$(uname -m)"
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck source=/dev/null
+    source /etc/os-release
+    os_id="${ID:-linux}"
+    version_id="${VERSION_ID:-}"
+  fi
+  major="${version_id%%.*}"
+  if [[ -n "$major" ]]; then
+    printf '%s-%s-%s\n' "$os_id" "$major" "$arch"
+  else
+    printf '%s-%s\n' "$os_id" "$arch"
+  fi
+}
+
+rpm_package_dir() {
+  printf '%s/packages/rpms/%s\n' "$PROJECT_DIR" "$(rpm_package_id)"
+}
+
+rpm_prereq_packages() {
+  cat <<'EOF'
+gcc
+make
+bison
+flex
+readline-devel
+zlib-devel
+openssl-devel
+libuuid-devel
+libicu-devel
+perl
+tar
+gzip
+python3
+python3-devel
+python3-pip
+sudo
+chrony
+iproute
+iputils
+yum-utils
+cronie
+EOF
 }

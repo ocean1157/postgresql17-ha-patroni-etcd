@@ -18,7 +18,16 @@ fi
 if [[ -n "${SSH_PASSWORD:-}" && -z "${SSH_KEY:-}" ]]; then
   if ! command -v sshpass >/dev/null 2>&1; then
     log "sshpass not found; trying to install it for password-based bootstrap"
-    pkg_install sshpass
+    rpm_dir="$(rpm_package_dir)"
+    if compgen -G "${rpm_dir}/sshpass-*.rpm" >/dev/null; then
+      if command -v dnf >/dev/null 2>&1; then
+        dnf install -y --disablerepo='*' "${rpm_dir}"/sshpass-*.rpm
+      else
+        yum install -y --disablerepo='*' "${rpm_dir}"/sshpass-*.rpm
+      fi
+    else
+      pkg_install sshpass
+    fi
   fi
   ssh_base=(sshpass -p "$SSH_PASSWORD" "${ssh_base[@]}")
   scp_base=(sshpass -p "$SSH_PASSWORD" "${scp_base[@]}")
@@ -41,8 +50,21 @@ copy_project() {
   tar -C "$PROJECT_DIR" -czf - . | "${ssh_base[@]}" "${SSH_USER}@${ip}" "tar -C '$INSTALL_ROOT' -xzf -"
 }
 
+preflight_package_cache() {
+  local rpm_dir
+  rpm_dir="$(rpm_package_dir)"
+  if ! compgen -G "$PROJECT_DIR/packages/wheels/*" >/dev/null; then
+    log "WARN: packages/wheels 为空；Patroni 将走在线 pip，内网或网络抖动时可能很慢或失败"
+  fi
+  if ! compgen -G "$rpm_dir/*.rpm" >/dev/null; then
+    log "WARN: $rpm_dir 没有 RPM 缓存；操作系统依赖将走 yum/dnf 仓库"
+  fi
+}
+
 main() {
   local ip
+  preflight_package_cache
+
   for ip in $(all_node_ips); do
     copy_project "$ip"
   done
