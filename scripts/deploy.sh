@@ -5,6 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "$PROJECT_DIR/scripts/lib.sh"
 load_config
+LOCAL_IP="$(current_ip)"
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 
@@ -17,17 +18,8 @@ fi
 
 if [[ -n "${SSH_PASSWORD:-}" && -z "${SSH_KEY:-}" ]]; then
   if ! command -v sshpass >/dev/null 2>&1; then
-    log "sshpass not found; trying to install it for password-based bootstrap"
-    rpm_dir="$(rpm_package_dir)"
-    if compgen -G "${rpm_dir}/sshpass-*.rpm" >/dev/null; then
-      if command -v dnf >/dev/null 2>&1; then
-        dnf install -y --disablerepo='*' "${rpm_dir}"/sshpass-*.rpm
-      else
-        yum install -y --disablerepo='*' "${rpm_dir}"/sshpass-*.rpm
-      fi
-    else
-      pkg_install sshpass
-    fi
+    log "sshpass 未安装，使用 yum/dnf 安装以支持密码方式分发项目"
+    pkg_install sshpass
   fi
   ssh_base=(sshpass -p "$SSH_PASSWORD" "${ssh_base[@]}")
   scp_base=(sshpass -p "$SSH_PASSWORD" "${scp_base[@]}")
@@ -39,10 +31,19 @@ run_remote() {
   "${ssh_base[@]}" "${SSH_USER}@${ip}" "$@"
 }
 
+node_project_dir() {
+  local ip="$1"
+  if [[ "$ip" == "$LOCAL_IP" ]]; then
+    printf '%s\n' "$PROJECT_DIR"
+  else
+    printf '%s\n' "$INSTALL_ROOT"
+  fi
+}
+
 copy_project() {
   local ip="$1"
-  if [[ "$ip" == "$(current_ip)" ]]; then
-    log "project already on local node $ip:$PROJECT_DIR"
+  if [[ "$ip" == "$LOCAL_IP" ]]; then
+    log "本机节点 $ip 直接使用当前项目目录：$PROJECT_DIR"
     return 0
   fi
   log "copy project to $ip:$INSTALL_ROOT"
@@ -50,28 +51,17 @@ copy_project() {
   tar -C "$PROJECT_DIR" -czf - . | "${ssh_base[@]}" "${SSH_USER}@${ip}" "tar -C '$INSTALL_ROOT' -xzf -"
 }
 
-preflight_package_cache() {
-  local rpm_dir
-  rpm_dir="$(rpm_package_dir)"
-  if ! compgen -G "$PROJECT_DIR/packages/wheels/*" >/dev/null; then
-    log "WARN: packages/wheels 为空；Patroni 将走在线 pip，内网或网络抖动时可能很慢或失败"
-  fi
-  if ! compgen -G "$rpm_dir/*.rpm" >/dev/null; then
-    log "WARN: $rpm_dir 没有 RPM 缓存；操作系统依赖将走 yum/dnf 仓库"
-  fi
-}
-
 main() {
-  local ip
-  preflight_package_cache
+  local ip remote_project_dir
 
   for ip in $(all_node_ips); do
     copy_project "$ip"
   done
 
   for ip in $(all_node_ips); do
+    remote_project_dir="$(node_project_dir "$ip")"
     log "install node $ip"
-    run_remote "$ip" "cd '$INSTALL_ROOT' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
+    run_remote "$ip" "cd '$remote_project_dir' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
   done
 
   for ip in $(all_node_ips); do

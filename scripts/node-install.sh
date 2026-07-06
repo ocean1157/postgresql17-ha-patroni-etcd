@@ -35,22 +35,10 @@ run_with_heartbeat() {
 }
 
 install_prereqs() {
-  log "install prerequisites"
-  local rpm_dir
+  log "使用系统仓库安装依赖"
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-    rpm_dir="$(rpm_package_dir)"
-    if compgen -G "${rpm_dir}/*.rpm" >/dev/null; then
-      log "install prerequisites from local rpm dir: $rpm_dir"
-      if command -v dnf >/dev/null 2>&1; then
-        dnf install -y --disablerepo='*' "${rpm_dir}"/*.rpm
-      else
-        yum install -y --disablerepo='*' "${rpm_dir}"/*.rpm
-      fi
-    else
-      log "local rpm dir is empty, install prerequisites from OS repositories"
-      mapfile -t prereq_pkgs < <(rpm_prereq_packages)
-      pkg_install "${prereq_pkgs[@]}"
-    fi
+    mapfile -t prereq_pkgs < <(rpm_prereq_packages)
+    pkg_install "${prereq_pkgs[@]}"
   elif command -v apt-get >/dev/null 2>&1; then
     pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
   else
@@ -259,16 +247,10 @@ install_patroni() {
     python3 -m pip install --upgrade --user virtualenv
     python3 -m virtualenv /opt/patroni-venv
   fi
-  if compgen -G "$PROJECT_DIR/packages/wheels/*" >/dev/null; then
-    log "install Patroni Python packages from local wheels"
-    env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" wheel >/dev/null 2>&1 || true
-    run_with_heartbeat "Patroni pip install offline" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --no-index --find-links "$PROJECT_DIR/packages/wheels" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
-  else
-    log "local wheels are missing, install Patroni Python packages from network"
-    run_with_heartbeat "pip upgrade" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 --upgrade "pip<22"
-    env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 wheel >/dev/null 2>&1 || true
-    run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
-  fi
+  log "使用在线 pip 安装 Patroni Python 依赖"
+  run_with_heartbeat "pip upgrade" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 --upgrade "pip<22"
+  env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 wheel >/dev/null 2>&1 || true
+  run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
   ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
 }

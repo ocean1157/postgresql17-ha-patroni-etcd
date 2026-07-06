@@ -28,17 +28,15 @@ nosync="false"
 - 两本地节点加一个异地容灾节点：本地节点 `nosync=false`，异地节点 `nosync=true`，必要时再加 `nofailover=true`、`noloadbalance=true`。
 - 维护某个副本：临时设置 `noloadbalance=true`；如果不希望它成为同步从库，再设置 `nosync=true`。
 
-## 离线安装包设计
+## 安装包设计
 
 `scripts/download-packages.sh` 在有网络的机器上执行后，会准备这些内容：
 
 - `packages/postgresql-*.tar.gz`：PostgreSQL 源码包。
 - `packages/etcd-*-linux-*.tar.gz`：etcd 二进制包。
-- `packages/wheels/`：Patroni、psycopg2、etcd 客户端等 Python wheel/sdist 包。
-- `packages/rpms/<系统-大版本-架构>/`：编译和运行所需 rpm 依赖包，例如 `centos-7-x86_64`。
+- `packages/pg_probackup-*.tar.gz`：pg_probackup 源码包。
 
-部署到内网时，安装脚本会优先使用 `packages/rpms/<系统-大版本-架构>/`
-里的 rpm；如果该目录为空，才会尝试使用 yum/dnf/apt 从系统仓库安装依赖。
+系统编译依赖统一在部署时通过 yum/dnf 安装，Patroni、psycopg2、etcd 客户端等 Python 依赖统一通过 pip 在线安装。
 
 ## 安装耗时说明
 

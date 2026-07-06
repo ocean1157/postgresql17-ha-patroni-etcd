@@ -303,27 +303,6 @@ pkg_install() {
   fi
 }
 
-rpm_package_id() {
-  local os_id="linux" version_id="" major arch
-  arch="$(uname -m)"
-  if [[ -r /etc/os-release ]]; then
-    # shellcheck source=/dev/null
-    source /etc/os-release
-    os_id="${ID:-linux}"
-    version_id="${VERSION_ID:-}"
-  fi
-  major="${version_id%%.*}"
-  if [[ -n "$major" ]]; then
-    printf '%s-%s-%s\n' "$os_id" "$major" "$arch"
-  else
-    printf '%s-%s\n' "$os_id" "$arch"
-  fi
-}
-
-rpm_package_dir() {
-  printf '%s/packages/rpms/%s\n' "$PROJECT_DIR" "$(rpm_package_id)"
-}
-
 rpm_prereq_packages() {
   cat <<'EOF'
 gcc
