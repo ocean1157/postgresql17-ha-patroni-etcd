@@ -316,15 +316,23 @@ pkg_install() {
 rpm_repo_install() {
   local manager="$1"
   shift
+  local -a repo_opts=()
+  local disabled_repo
+  if [[ -n "${RPM_DISABLE_REPOS:-epel}" ]]; then
+    IFS=',' read -ra repo_opts <<< "${RPM_DISABLE_REPOS:-epel}"
+    for disabled_repo in "${!repo_opts[@]}"; do
+      repo_opts[$disabled_repo]="--disablerepo=$(trim "${repo_opts[$disabled_repo]}")"
+    done
+  fi
   log "使用 ${manager} 安装软件包：$*"
-  if "$manager" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
+  if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
     return 0
   fi
 
   log "${manager} 安装失败，可能是 DNS、镜像仓库或缓存元数据异常；清理缓存后重试一次"
   "$manager" clean all || true
-  "$manager" makecache -y || true
-  if "$manager" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
+  "$manager" "${repo_opts[@]}" makecache -y || true
+  if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
     return 0
   fi
 
