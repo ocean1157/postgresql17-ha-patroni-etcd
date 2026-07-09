@@ -80,8 +80,6 @@ surface:
 
 - `prefix`
 - `data_dir`
-- `wal_archive`
-- `backup_dir`
 
 `[postgresql.auth]` describes database users and passwords:
 
@@ -191,6 +189,7 @@ changed with `patronictl edit-config` or by reinitializing the DCS state.
 
 `[pg_probackup]` 单元控制备份目录、实例名、命令路径、保留策略和计划任务时间。当前默认使用 2.5.16，这是 pg_probackup GitHub Release 页面标记的 Latest 版本。
 
+- `backup_dir`：pg_probackup 仓库目录。PostgreSQL 的 `archive_command` 中 `-B` 参数必须与该目录一致。
 - `retention_redundancy="4"`：保留 4 个可用全量备份链。
 - `retention_window="30"`：尽量保留 30 天恢复窗口。
 - `cron_hour="1"`、`cron_minute="30"`：每天凌晨 1:30 运行。

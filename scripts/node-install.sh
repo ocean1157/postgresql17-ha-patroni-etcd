@@ -42,7 +42,8 @@ install_prereqs() {
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
     local pkg
     local -a prereq_pkgs missing_pkgs=()
-    mapfile -t prereq_pkgs < <(rpm_prereq_packages)
+    # shellcheck disable=SC2207
+    prereq_pkgs=($(rpm_prereq_packages))
     for pkg in "${prereq_pkgs[@]}"; do
       if ! rpm -q "$pkg" >/dev/null 2>&1; then
         missing_pkgs+=("$pkg")
@@ -146,12 +147,12 @@ configure_firewall() {
 create_users_dirs() {
   log "create postgres user and directories"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
-  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_WAL_ARCHIVE" "$PG_BACKUP" "$PG_PROBACKUP_BACKUP_DIR" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
+  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
   mkdir -p /var/run/postgresql
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$(dirname "$PG_DATA")" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR"
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$(dirname "$PG_DATA")" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR"
   chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
   chmod 775 /var/run/postgresql
-  chmod 700 "$PG_DATA" "$(dirname "$PG_WAL_ARCHIVE")" "$PG_BACKUP" "$PG_PROBACKUP_BACKUP_DIR"
+  chmod 700 "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR"
 }
 
 write_postgres_env() {

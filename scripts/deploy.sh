@@ -181,8 +181,9 @@ run_parallel_phase() {
 
 main() {
   local ip
-  local -a node_ips=()
-  mapfile -t node_ips < <(all_node_ips)
+  local -a node_ips
+  # shellcheck disable=SC2207
+  node_ips=($(all_node_ips))
 
   run_parallel_phase "分发项目" copy_project "${node_ips[@]}"
   run_parallel_phase "安装节点" install_node "${node_ips[@]}"
