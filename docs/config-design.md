@@ -190,13 +190,24 @@ changed with `patronictl edit-config` or by reinitializing the DCS state.
 `[pg_probackup]` 单元控制备份目录、实例名、命令路径、保留策略和计划任务时间。当前默认使用 2.5.16，这是 pg_probackup GitHub Release 页面标记的 Latest 版本。
 
 - `backup_dir`：pg_probackup 仓库目录。PostgreSQL 的 `archive_command` 中 `-B` 参数必须与该目录一致。
+- `binary`：pg_probackup 命令路径。脚本会自动引用该路径生成 PostgreSQL `archive_command`。
+- `job_script`：定时备份脚本路径，会写入 `/etc/cron.d/pg-probackup-ha`。
 - `retention_redundancy="4"`：保留 4 个可用全量备份链。
 - `retention_window="30"`：尽量保留 30 天恢复窗口。
 - `cron_hour="1"`、`cron_minute="30"`：每天凌晨 1:30 运行。
 - `full_backup_day="0"`：周日做全量备份，0 代表周日。
 - `incremental_mode="PAGE"`：非全量日做 PAGE 增量备份。
 
-备份脚本只会在当前 Patroni Leader 上执行，Replica 节点会自动跳过。首次运行如果没有发现有效历史备份，即使当天不是周日，也会自动切换为 FULL，避免第一次就执行增量失败。PostgreSQL 的 `archive_command` 使用 `pg_probackup archive-push` 归档 WAL。
+备份脚本只会在当前 Patroni Leader 上执行，Replica 节点会自动跳过。首次运行如果没有发现有效历史备份，即使当天不是周日，也会自动切换为 FULL，避免第一次就执行增量失败。PostgreSQL 的 `archive_command` 使用 `pg_probackup archive-push` 归档 WAL，由脚本根据 `[pg_probackup] binary`、`backup_dir`、`instance` 自动生成，避免同一路径维护两次。
+
+## Patroni 路径
+
+`[patroni]` 中的路径会同时影响安装、systemd、部署检查和巡检脚本：
+
+- `home`：`patroni.yml` 和 `vip_callback.sh` 所在目录。
+- `log_dir`：Patroni 日志目录。
+- `venv`：Patroni Python 虚拟环境目录。
+- `bin_dir`：`patroni`、`patronictl` 命令软链目录。
 
 ## pg_cron 扩展
 

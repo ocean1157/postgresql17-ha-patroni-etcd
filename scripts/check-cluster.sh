@@ -12,12 +12,12 @@ load_config
 ENDPOINTS="$(etcd_client_endpoints)"
 
 echo "== etcd endpoint health =="
-env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 etcdctl --endpoints="$ENDPOINTS" endpoint health || true
+env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 "$ETCD_BIN_DIR/etcdctl" --endpoints="$ENDPOINTS" endpoint health || true
 
 echo
 echo "== patroni cluster =="
-patronictl -c "$PATRONI_HOME/patroni.yml" list || true
+"$PATRONICTL_BIN" -c "$PATRONI_HOME/patroni.yml" list || true
 
 echo
 echo "== postgres version =="
-PGPASSWORD="$POSTGRES_SUPERPASS" psql -h "$(primary_ip)" -p "$POSTGRES_PORT" -U "$POSTGRES_SUPERUSER" -d postgres -c "select version();" || true
+PGPASSWORD="$POSTGRES_SUPERPASS" "$PG_PREFIX/bin/psql" -h "$(primary_ip)" -p "$POSTGRES_PORT" -U "$POSTGRES_SUPERUSER" -d postgres -c "select version();" || true

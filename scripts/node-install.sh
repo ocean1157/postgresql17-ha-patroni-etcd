@@ -172,7 +172,7 @@ export PATRONI_CONFIG=${PATRONI_HOME}/patroni.yml
 export ETCDCTL_ENDPOINTS=$(etcd_client_endpoints)
 export PG_PROBACKUP=${PG_PROBACKUP_BINARY}
 export PG_PROBACKUP_BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
-export PATH=\$PGHOME/bin:/opt/patroni-venv/bin:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
+export PATH=\$PGHOME/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
 export LD_LIBRARY_PATH=\$PGHOME/lib:\${LD_LIBRARY_PATH:-}
 EOF
   chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "${pg_home}/.pgev"
@@ -210,7 +210,7 @@ install_postgres() {
 }
 
 install_etcd() {
-  if [[ -x "$ETCD_BIN_DIR/etcd" ]]; then
+  if [[ -x "$ETCD_BIN_DIR/etcd" && -x "$ETCD_BIN_DIR/etcdctl" && -x "$ETCD_BIN_DIR/etcdutl" ]]; then
     log "etcd already installed at $ETCD_BIN_DIR"
     return 0
   fi
@@ -283,26 +283,28 @@ install_pg_cron() {
 install_patroni() {
   cd "$PROJECT_DIR"
 
-  if [[ -x /opt/patroni-venv/bin/patroni ]] && /opt/patroni-venv/bin/patroni --version 2>/dev/null | grep -q "$PATRONI_VERSION"; then
+  if [[ -x "$PATRONI_VENV/bin/patroni" ]] && "$PATRONI_VENV/bin/patroni" --version 2>/dev/null | grep -q "$PATRONI_VERSION"; then
     log "Patroni $PATRONI_VERSION already installed"
-    ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
-    ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
+    mkdir -p "$PATRONI_BIN_DIR"
+    ln -sf "$PATRONI_VENV/bin/patroni" "$PATRONI_BIN"
+    ln -sf "$PATRONI_VENV/bin/patronictl" "$PATRONICTL_BIN"
     return 0
   fi
 
   log "install Patroni venv"
-  if python3 -m venv /opt/patroni-venv >/dev/null 2>&1; then
+  if python3 -m venv "$PATRONI_VENV" >/dev/null 2>&1; then
     :
   else
     python3 -m pip install --upgrade --user virtualenv
-    python3 -m virtualenv /opt/patroni-venv
+    python3 -m virtualenv "$PATRONI_VENV"
   fi
   log "使用在线 pip 安装 Patroni Python 依赖"
-  run_with_heartbeat "pip upgrade" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 --upgrade "pip<22"
-  env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 wheel >/dev/null 2>&1 || true
-  run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 /opt/patroni-venv/bin/pip install --retries 10 --timeout 120 "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
-  ln -sf /opt/patroni-venv/bin/patroni /usr/local/bin/patroni
-  ln -sf /opt/patroni-venv/bin/patronictl /usr/local/bin/patronictl
+  run_with_heartbeat "pip upgrade" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --retries 10 --timeout 120 --upgrade "pip<22"
+  env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --retries 10 --timeout 120 wheel >/dev/null 2>&1 || true
+  run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --retries 10 --timeout 120 "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+  mkdir -p "$PATRONI_BIN_DIR"
+  ln -sf "$PATRONI_VENV/bin/patroni" "$PATRONI_BIN"
+  ln -sf "$PATRONI_VENV/bin/patronictl" "$PATRONICTL_BIN"
 }
 
 write_etcd_config() {
@@ -510,7 +512,8 @@ configure_pg_probackup() {
 
   su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY set-config -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' --retention-redundancy='$PG_PROBACKUP_RETENTION_REDUNDANCY' --retention-window='$PG_PROBACKUP_RETENTION_WINDOW'" >/dev/null 2>&1 || true
 
-  cat >/usr/local/bin/pg_ha_probackup.sh <<EOF
+  mkdir -p "$(dirname "$PG_PROBACKUP_JOB_SCRIPT")"
+  cat >"$PG_PROBACKUP_JOB_SCRIPT" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -520,7 +523,7 @@ export PGPORT=${POSTGRES_PORT}
 export PGDATABASE=${PGDATABASE}
 export PGUSER=${PG_PROBACKUP_BACKUP_USER}
 export PGHOST=/var/run/postgresql
-export PATH=${PG_PREFIX}/bin:/opt/patroni-venv/bin:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
+export PATH=${PG_PREFIX}/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
 export LD_LIBRARY_PATH=${PG_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
 
 LOG_DIR=/var/log/pg_probackup
@@ -535,7 +538,7 @@ mkdir -p "\$LOG_DIR"
 exec >>"\$LOG_DIR/pg_probackup-\$(date +%F).log" 2>&1
 
 echo "[\$(date '+%F %T')] pg_probackup job start on \$(hostname)"
-if ! patronictl -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="${MY_NAME}" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
+if ! ${PATRONICTL_BIN} -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="${MY_NAME}" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
   echo "[\$(date '+%F %T')] current node is not Patroni leader, skip backup"
   exit 0
 fi
@@ -556,13 +559,13 @@ echo "[\$(date '+%F %T')] run \$BACKUP_MODE backup"
 "\$PG_PROBACKUP_BIN" delete -B "\$BACKUP_DIR" --instance "\$INSTANCE" --delete-expired --delete-wal
 echo "[\$(date '+%F %T')] pg_probackup job finished"
 EOF
-  chmod 0755 /usr/local/bin/pg_ha_probackup.sh
-  chown root:root /usr/local/bin/pg_ha_probackup.sh
+  chmod 0755 "$PG_PROBACKUP_JOB_SCRIPT"
+  chown root:root "$PG_PROBACKUP_JOB_SCRIPT"
 
   cat >/etc/cron.d/pg-probackup-ha <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${POSTGRES_OS_USER} /usr/local/bin/pg_ha_probackup.sh
+${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${POSTGRES_OS_USER} ${PG_PROBACKUP_JOB_SCRIPT}
 EOF
   chmod 0644 /etc/cron.d/pg-probackup-ha
   systemctl enable --now crond >/dev/null 2>&1 || true
@@ -579,8 +582,8 @@ After=network-online.target etcd.service
 Type=simple
 User=${POSTGRES_OS_USER}
 Group=${POSTGRES_OS_USER}
-Environment=PATH=${PG_PREFIX}/bin:/opt/patroni-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-ExecStart=/usr/local/bin/patroni ${PATRONI_HOME}/patroni.yml
+Environment=PATH=${PG_PREFIX}/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=${PATRONI_BIN} ${PATRONI_HOME}/patroni.yml
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=postgresql

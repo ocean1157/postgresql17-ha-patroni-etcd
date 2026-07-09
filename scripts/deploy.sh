@@ -105,9 +105,25 @@ verify_node() {
   run_remote_retry "$ip" "systemctl is-enabled etcd.service patroni.service && systemctl is-active etcd.service patroni.service"
 }
 
+verify_install_node() {
+  local ip="$1"
+  log "verify install files on $ip"
+  run_remote_retry "$ip" "test -x '$ETCD_BIN_DIR/etcd' && \
+    test -x '$ETCD_BIN_DIR/etcdctl' && \
+    test -f '$ETCD_CONFIG_FILE' && \
+    test -f '$PATRONI_HOME/patroni.yml' && \
+    test -x '$PATRONI_BIN' && \
+    test -x '$PATRONICTL_BIN' && \
+    test -x '$PG_PREFIX/bin/postgres' && \
+    test -x '$PG_PROBACKUP_BINARY' && \
+    test -x '$PG_PROBACKUP_JOB_SCRIPT' && \
+    test -f /etc/systemd/system/etcd.service && \
+    test -f /etc/systemd/system/patroni.service"
+}
+
 create_database_extensions() {
   log "初始化 PostgreSQL 扩展 pg_cron 和 pg_stat_statements"
-  run_remote_retry "$(primary_ip)" "leader_ip=\$(patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
+  run_remote_retry "$(primary_ip)" "leader_ip=\$('$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
     test -n \"\$leader_ip\"; \
     PGPASSWORD='$POSTGRES_SUPERPASS' '$PG_PREFIX/bin/psql' -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U '$POSTGRES_SUPERUSER' -d '$PGCONF_CRON_DATABASE_NAME' -v ON_ERROR_STOP=1 \
       -c 'CREATE EXTENSION IF NOT EXISTS pg_cron;' \
@@ -117,15 +133,15 @@ create_database_extensions() {
 
 apply_patroni_runtime_config() {
   log "写入 Patroni 动态配置，确保 pg_cron 预加载参数对复跑生效"
-  run_remote_retry "$(primary_ip)" "patronictl -c '$PATRONI_HOME/patroni.yml' edit-config --force \
+  run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' edit-config --force \
     --set 'postgresql.parameters.shared_preload_libraries=$PGCONF_SHARED_PRELOAD_LIBRARIES' \
     --set 'postgresql.parameters.cron.database_name=$PGCONF_CRON_DATABASE_NAME'"
 
   log "重启 Patroni 管理的 PostgreSQL 实例以加载 shared_preload_libraries"
-  run_remote_retry "$(primary_ip)" "patronictl -c '$PATRONI_HOME/patroni.yml' restart --force '$SCOPE'"
+  run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' restart --force '$SCOPE'"
 
   log "wait for Patroni cluster after runtime config"
-  run_remote_retry "$(primary_ip)" "for i in {1..120}; do patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 }
 
 parallel_limit() {
@@ -133,7 +149,11 @@ parallel_limit() {
   node_count="$(all_node_ips | wc -l | tr -d ' ')"
   configured="${DEPLOY_PARALLEL_JOBS:-0}"
   if [[ "$configured" =~ ^[0-9]+$ ]] && [[ "$configured" -gt 0 ]]; then
-    printf '%s\n' "$configured"
+    if [[ "$configured" -gt "$node_count" ]]; then
+      printf '%s\n' "$node_count"
+    else
+      printf '%s\n' "$configured"
+    fi
   else
     printf '%s\n' "$node_count"
   fi
@@ -187,23 +207,24 @@ main() {
 
   run_parallel_phase "分发项目" copy_project "${node_ips[@]}"
   run_parallel_phase "安装节点" install_node "${node_ips[@]}"
+  run_parallel_phase "校验安装文件" verify_install_node "${node_ips[@]}"
   run_parallel_phase "启用 systemd 单元" enable_units "${node_ips[@]}"
   run_parallel_phase "启动 etcd" start_etcd_node "${node_ips[@]}"
 
   log "wait for etcd health"
-  run_remote_retry "$(primary_ip)" "for i in {1..90}; do env -u ETCDCTL_ENDPOINTS etcdctl --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
 
   run_parallel_phase "启动 patroni" start_patroni_node "${node_ips[@]}"
 
   log "wait for Patroni cluster"
-  run_remote_retry "$(primary_ip)" "for i in {1..120}; do patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && patronictl -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   apply_patroni_runtime_config
   create_database_extensions
   run_parallel_phase "验证服务" verify_node "${node_ips[@]}"
 
   log "cluster deployment commands finished"
-  log "check with: su - postgres -c 'patronictl -c /etc/patroni/patroni.yml list'"
+  log "check with: su - $POSTGRES_OS_USER -c '$PATRONICTL_BIN -c $PATRONI_HOME/patroni.yml list'"
 }
 
 main "$@"
