@@ -147,10 +147,11 @@ configure_firewall() {
 create_users_dirs() {
   log "create postgres user and directories"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
-  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$ETCD_DATA" "$PATRONI_HOME" "$PATRONI_LOG_DIR"
+  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$ETCD_DATA" "$ETCD_BIN_DIR" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_BIN_DIR"
   mkdir -p /var/run/postgresql
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$(dirname "$PG_DATA")" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR"
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR" "$ETCD_DATA" "$ETCD_BIN_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
   chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
+  chmod 755 "$PG_PREFIX" "$ETCD_DATA" "$ETCD_BIN_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
   chmod 775 /var/run/postgresql
   chmod 700 "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR"
 }
@@ -496,7 +497,9 @@ tags:
   clonefrom: ${tag_clonefrom}
   nosync: ${tag_nosync}
 EOF
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PATRONI_HOME"
+  chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PATRONI_HOME"
+  chmod 0755 "$PATRONI_HOME"
+  chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PATRONI_HOME/patroni.yml"
   chmod 0600 "$PATRONI_HOME/patroni.yml"
 }
 
