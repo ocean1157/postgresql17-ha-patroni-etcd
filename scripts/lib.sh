@@ -177,9 +177,9 @@ map_config_aliases() {
 }
 
 require_database_passwords() {
-  [[ -n "$POSTGRES_SUPERPASS" ]] || die "config [postgresql.auth] superpass 不能为空"
-  [[ -n "$REPLICATION_PASS" ]] || die "config [postgresql.auth] replication_pass 不能为空"
-  [[ -n "$REWIND_PASS" ]] || die "config [postgresql.auth] rewind_pass 不能为空"
+  [[ -n "$POSTGRES_SUPERPASS" ]] || die "config [postgresql.auth] superpass cannot be empty"
+  [[ -n "$REPLICATION_PASS" ]] || die "config [postgresql.auth] replication_pass cannot be empty"
+  [[ -n "$REWIND_PASS" ]] || die "config [postgresql.auth] rewind_pass cannot be empty"
 }
 
 node_tag_value() {
@@ -345,7 +345,7 @@ yum_source_args() {
     if is_url "$YUM_SOURCE"; then
       if command -v curl >/dev/null 2>&1; then curl -fsSL "$YUM_SOURCE" -o "$repo_dir/cluster.repo"
       elif command -v wget >/dev/null 2>&1; then wget -qO "$repo_dir/cluster.repo" "$YUM_SOURCE"
-      else die "读取 yum .repo URL 需要 curl 或 wget"; fi
+      else die "curl or wget is required"; fi
     else
       cp -f "$YUM_SOURCE" "$repo_dir/cluster.repo"
     fi
@@ -373,28 +373,38 @@ rpm_repo_install() {
   yum_source_args
   repo_opts+=("${YUM_SOURCE_ARGS[@]}")
   local rpm_dir="$PROJECT_DIR/packages/rpm"
-  if [[ -d "$rpm_dir" ]] && compgen -G "$rpm_dir/*.rpm" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
-    log "使用 packages/rpm 本地依赖包；已禁用全部软件仓库，不访问 yum/dnf 网络源"
+
+  rpm_install_local() {
+    [[ -d "$rpm_dir" ]] && compgen -G "$rpm_dir/*.rpm" >/dev/null || return 1
+    log "using packages/rpm local RPMs with repositories disabled"
     "$manager" --disablerepo='*' install -y "$rpm_dir"/*.rpm
-    return
-  elif [[ "${OFFLINE_INSTALL,,}" == "true" ]]; then
-    die "offline_install=true，但 packages/rpm 中没有 RPM 包"
+  }
+
+  local offline_mode="${OFFLINE_INSTALL,,}"
+  if [[ "$offline_mode" == "true" ]]; then
+    rpm_install_local || die "offline_install=true but packages/rpm has no usable RPM packages"
+    return 0
   fi
-  log "使用 ${manager} 安装软件包：$*"
+
+  log "using ${manager} online repositories to install packages: $*"
   if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
     return 0
   fi
 
-  log "${manager} 安装失败，可能是 DNS、镜像仓库或缓存元数据异常；清理缓存后重试一次"
+  log "${manager} online install failed; cleaning metadata and retrying once"
   "$manager" clean all || true
   "$manager" "${repo_opts[@]}" makecache -y || true
   if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
     return 0
   fi
 
-  die "${manager} 安装依赖失败。请检查节点 DNS、/etc/yum.repos.d 仓库地址，以及是否能解析并访问镜像站"
-}
+  if [[ "$offline_mode" != "false" ]]; then
+    log "${manager} online repositories unavailable; falling back to packages/rpm"
+    rpm_install_local && return 0
+  fi
 
+  die "${manager} install failed. Check DNS, repository configuration, mirror availability, or prepare packages/rpm with scripts/download-package.sh"
+}
 rpm_prereq_packages() {
   cat <<'EOF'
 gcc
@@ -418,5 +428,7 @@ iproute
 iputils
 yum-utils
 cronie
+openssh-clients
+sshpass
 EOF
 }

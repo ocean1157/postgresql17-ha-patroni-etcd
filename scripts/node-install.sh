@@ -38,7 +38,7 @@ run_with_heartbeat() {
 }
 
 install_prereqs() {
-  log "使用系统仓库安装依赖"
+  log "install system dependencies from online package repositories"
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
     local pkg
     local -a prereq_pkgs missing_pkgs=()
@@ -50,7 +50,7 @@ install_prereqs() {
       fi
     done
     if [[ "${#missing_pkgs[@]}" -eq 0 ]]; then
-      log "系统依赖已安装，跳过 yum/dnf"
+      log "system dependencies already installed; skipping yum/dnf"
     else
       pkg_install "${missing_pkgs[@]}"
     fi
@@ -190,7 +190,7 @@ install_postgres() {
     return 0
   fi
   local tgz="$PROJECT_DIR/packages/postgresql-${POSTGRES_VERSION}.tar.gz"
-  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-package.sh first"
   log "build PostgreSQL $POSTGRES_VERSION"
   local build_dir="/tmp/postgresql-${POSTGRES_VERSION}-build"
   rm -rf "$build_dir"
@@ -216,7 +216,7 @@ install_etcd() {
     return 0
   fi
   local tgz="$PROJECT_DIR/packages/etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz"
-  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-package.sh first"
   log "install etcd $ETCD_VERSION"
   local tmp="/tmp/etcd-${ETCD_VERSION}"
   rm -rf "$tmp"
@@ -235,8 +235,8 @@ install_pg_probackup() {
   fi
   local tgz="$PROJECT_DIR/packages/pg_probackup-${PG_PROBACKUP_VERSION}.tar.gz"
   local pg_tgz="$PROJECT_DIR/packages/postgresql-${POSTGRES_VERSION}.tar.gz"
-  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
-  [[ -f "$pg_tgz" ]] || die "missing $pg_tgz; run scripts/download-packages.sh first"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-package.sh first"
+  [[ -f "$pg_tgz" ]] || die "missing $pg_tgz; run scripts/download-package.sh first"
   log "build pg_probackup $PG_PROBACKUP_VERSION"
   local build_dir="/tmp/pg_probackup-${PG_PROBACKUP_VERSION}-build"
   local pg_src_dir="/tmp/postgresql-${POSTGRES_VERSION}-src-for-pg_probackup"
@@ -266,7 +266,7 @@ install_pg_cron() {
   fi
 
   local tgz="$PROJECT_DIR/packages/pg_cron-${PG_CRON_VERSION}.tar.gz"
-  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-packages.sh first"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-package.sh first"
   [[ -x "$PG_PREFIX/bin/pg_config" ]] || die "missing $PG_PREFIX/bin/pg_config; install PostgreSQL first"
 
   log "build pg_cron $PG_CRON_VERSION"
@@ -292,35 +292,65 @@ install_patroni() {
     return 0
   fi
 
+  local wheel_dir="$PROJECT_DIR/packages/python"
+  local offline_mode="${OFFLINE_INSTALL,,}"
+
+  pip_install_virtualenv_online() {
+    pip_source_args
+    python3 -m pip install --upgrade --user "${PIP_SOURCE_ARGS[@]}" virtualenv
+  }
+
+  pip_install_virtualenv_local() {
+    [[ -d "$wheel_dir" ]] && compgen -G "$wheel_dir/*" >/dev/null || return 1
+    python3 -m pip install --user --no-index --find-links "$wheel_dir" virtualenv
+  }
+
   log "install Patroni venv"
   if python3 -m venv "$PATRONI_VENV" >/dev/null 2>&1; then
     :
   else
-    if [[ -d "$PROJECT_DIR/packages/python" ]] && compgen -G "$PROJECT_DIR/packages/python/*" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
-      python3 -m pip install --user --no-index --find-links "$PROJECT_DIR/packages/python" virtualenv
+    if [[ "$offline_mode" == "true" ]]; then
+      pip_install_virtualenv_local || die "offline_install=true but packages/python has no virtualenv package"
+    elif pip_install_virtualenv_online; then
+      :
+    elif [[ "$offline_mode" != "false" ]]; then
+      log "pip online install for virtualenv failed; falling back to packages/python"
+      pip_install_virtualenv_local || die "pip online install failed and packages/python has no virtualenv package"
     else
-      pip_source_args
-      python3 -m pip install --upgrade --user "${PIP_SOURCE_ARGS[@]}" virtualenv
+      die "pip online install for virtualenv failed"
     fi
     python3 -m virtualenv "$PATRONI_VENV"
   fi
-  local wheel_dir="$PROJECT_DIR/packages/python"
-  local -a pip_args=(--retries 10 --timeout 120)
-  if [[ -d "$wheel_dir" ]] && compgen -G "$wheel_dir/*" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
-    log "使用 packages/python 本地安装 Python 依赖；--no-index 禁止访问 pip 网络源"
-    pip_args+=(--no-index --find-links "$wheel_dir")
-  elif [[ "${OFFLINE_INSTALL,,}" == "true" ]]; then
-    die "offline_install=true，但 packages/python 中没有 Python 包"
-  else
+
+  patroni_pip_install_online() {
+    local -a pip_args=(--retries 10 --timeout 120)
     pip_source_args
     pip_args+=("${PIP_SOURCE_ARGS[@]}")
+    run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+  }
+
+  patroni_pip_install_local() {
+    [[ -d "$wheel_dir" ]] && compgen -G "$wheel_dir/*" >/dev/null || return 1
+    local -a pip_args=(--retries 10 --timeout 120 --no-index --find-links "$wheel_dir")
+    log "using packages/python local Python packages with pip --no-index"
+    run_with_heartbeat "Patroni pip install local" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+  }
+
+  if [[ "$offline_mode" == "true" ]]; then
+    patroni_pip_install_local || die "offline_install=true but packages/python has no usable Python packages"
+  elif patroni_pip_install_online; then
+    :
+  elif [[ "$offline_mode" != "false" ]]; then
+    log "pip online install failed; falling back to packages/python"
+    patroni_pip_install_local || die "pip online install failed and packages/python has no usable Python packages"
+  else
+    die "pip online install failed"
   fi
-  run_with_heartbeat "Patroni pip install" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+
   mkdir -p "$PATRONI_BIN_DIR"
   ln -sf "$PATRONI_VENV/bin/patroni" "$PATRONI_BIN"
   ln -sf "$PATRONI_VENV/bin/patronictl" "$PATRONICTL_BIN"
 }
-
 write_etcd_config() {
   local initial_cluster
   initial_cluster="$(etcd_initial_cluster)"
