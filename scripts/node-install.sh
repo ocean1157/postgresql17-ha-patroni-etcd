@@ -296,13 +296,26 @@ install_patroni() {
   if python3 -m venv "$PATRONI_VENV" >/dev/null 2>&1; then
     :
   else
-    python3 -m pip install --upgrade --user virtualenv
+    if [[ -d "$PROJECT_DIR/packages/python" ]] && compgen -G "$PROJECT_DIR/packages/python/*" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
+      python3 -m pip install --user --no-index --find-links "$PROJECT_DIR/packages/python" virtualenv
+    else
+      pip_source_args
+      python3 -m pip install --upgrade --user "${PIP_SOURCE_ARGS[@]}" virtualenv
+    fi
     python3 -m virtualenv "$PATRONI_VENV"
   fi
-  log "使用在线 pip 安装 Patroni Python 依赖"
-  run_with_heartbeat "pip upgrade" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --retries 10 --timeout 120 --upgrade "pip<22"
-  env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --retries 10 --timeout 120 wheel >/dev/null 2>&1 || true
-  run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --retries 10 --timeout 120 "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
+  local wheel_dir="$PROJECT_DIR/packages/python"
+  local -a pip_args=(--retries 10 --timeout 120)
+  if [[ -d "$wheel_dir" ]] && compgen -G "$wheel_dir/*" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
+    log "使用 packages/python 离线安装 Python 依赖"
+    pip_args+=(--no-index --find-links "$wheel_dir")
+  elif [[ "${OFFLINE_INSTALL,,}" == "true" ]]; then
+    die "offline_install=true，但 packages/python 中没有 Python 包"
+  else
+    pip_source_args
+    pip_args+=("${PIP_SOURCE_ARGS[@]}")
+  fi
+  run_with_heartbeat "Patroni pip install" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   mkdir -p "$PATRONI_BIN_DIR"
   ln -sf "$PATRONI_VENV/bin/patroni" "$PATRONI_BIN"
   ln -sf "$PATRONI_VENV/bin/patronictl" "$PATRONICTL_BIN"

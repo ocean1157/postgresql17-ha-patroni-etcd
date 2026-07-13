@@ -78,4 +78,4 @@ bash scripts/check-cluster.sh
 
 ## 安装包说明
 
-[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-packages.sh` 会下载 PostgreSQL、etcd、pg_probackup、pg_cron 四类核心软件包。系统编译依赖通过 yum/dnf 安装，Patroni 通过 Python venv + pip 在线安装。
+[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-packages.sh` 会下载四类核心软件包、RPM 递归依赖和 Patroni 的 Python 依赖，并生成校验清单。请在与目标机相同的 OS 大版本、CPU 架构和 Python 版本的联网环境执行，然后整体打包 `packages/` 搬到离线环境。设置 `[repository] offline_install="true"` 可强制部署过程不回退到网络源。

@@ -72,6 +72,10 @@ map_config_aliases() {
   SSH_KEY="${DEPLOY_SSH_KEY:-}"
   SSH_PORT="${DEPLOY_SSH_PORT:-22}"
   DEPLOY_PARALLEL_JOBS="${DEPLOY_PARALLEL_JOBS:-0}"
+  YUM_SOURCE="${REPOSITORY_YUM_SOURCE:-}"
+  YUM_DISABLE_REPOS="${REPOSITORY_YUM_DISABLE_REPOS:-${RPM_DISABLE_REPOS:-}}"
+  PIP_SOURCE="${REPOSITORY_PIP_SOURCE:-}"
+  OFFLINE_INSTALL="${REPOSITORY_OFFLINE_INSTALL:-auto}"
 
   OS_TIMEZONE="${OS_TIMEZONE:-Asia/Shanghai}"
   OS_ENABLE_CHRONY="${OS_ENABLE_CHRONY:-true}"
@@ -313,16 +317,68 @@ pkg_install() {
   fi
 }
 
+is_url() { [[ "$1" =~ ^(https?|ftp|file):// ]]; }
+
+normalize_pip_index() {
+  local url="${1%/}"
+  [[ "$url" == */simple ]] || url="${url}/simple"
+  printf '%s\n' "$url"
+}
+
+pip_source_args() {
+  PIP_SOURCE_ARGS=()
+  [[ -n "${PIP_SOURCE:-}" ]] || return 0
+  if [[ "$PIP_SOURCE" == *" "* ]]; then
+    # shellcheck disable=SC2206
+    PIP_SOURCE_ARGS=( $PIP_SOURCE )
+  else
+    PIP_SOURCE_ARGS=(--index-url "$(normalize_pip_index "$PIP_SOURCE")")
+  fi
+}
+
+yum_source_args() {
+  YUM_SOURCE_ARGS=()
+  [[ -n "${YUM_SOURCE:-}" ]] || return 0
+  if [[ "$YUM_SOURCE" == *.repo || "$YUM_SOURCE" == *.repo\?* ]]; then
+    local repo_dir="/tmp/pg-ha-yum-repos"
+    mkdir -p "$repo_dir"
+    if is_url "$YUM_SOURCE"; then
+      if command -v curl >/dev/null 2>&1; then curl -fsSL "$YUM_SOURCE" -o "$repo_dir/cluster.repo"
+      elif command -v wget >/dev/null 2>&1; then wget -qO "$repo_dir/cluster.repo" "$YUM_SOURCE"
+      else die "读取 yum .repo URL 需要 curl 或 wget"; fi
+    else
+      cp -f "$YUM_SOURCE" "$repo_dir/cluster.repo"
+    fi
+    YUM_SOURCE_ARGS=(--setopt="reposdir=$repo_dir")
+  elif is_url "$YUM_SOURCE" || [[ "$YUM_SOURCE" == /* ]]; then
+    YUM_SOURCE_ARGS=(--repofrompath="cluster-source,$YUM_SOURCE" --enablerepo=cluster-source)
+  else
+    local i
+    IFS=',' read -ra YUM_SOURCE_ARGS <<< "$YUM_SOURCE"
+    for i in "${!YUM_SOURCE_ARGS[@]}"; do YUM_SOURCE_ARGS[$i]="--enablerepo=$(trim "${YUM_SOURCE_ARGS[$i]}")"; done
+  fi
+}
+
 rpm_repo_install() {
   local manager="$1"
   shift
   local -a repo_opts=()
   local disabled_repo
-  if [[ -n "${RPM_DISABLE_REPOS:-epel}" ]]; then
-    IFS=',' read -ra repo_opts <<< "${RPM_DISABLE_REPOS:-epel}"
+  if [[ -n "${YUM_DISABLE_REPOS:-}" ]]; then
+    IFS=',' read -ra repo_opts <<< "$YUM_DISABLE_REPOS"
     for disabled_repo in "${!repo_opts[@]}"; do
       repo_opts[$disabled_repo]="--disablerepo=$(trim "${repo_opts[$disabled_repo]}")"
     done
+  fi
+  yum_source_args
+  repo_opts+=("${YUM_SOURCE_ARGS[@]}")
+  local rpm_dir="$PROJECT_DIR/packages/rpm"
+  if [[ -d "$rpm_dir" ]] && compgen -G "$rpm_dir/*.rpm" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
+    log "使用 packages/rpm 离线依赖包（整批事务解析依赖，不依赖文件顺序）"
+    "$manager" --disablerepo='*' install -y "$rpm_dir"/*.rpm
+    return
+  elif [[ "${OFFLINE_INSTALL,,}" == "true" ]]; then
+    die "offline_install=true，但 packages/rpm 中没有 RPM 包"
   fi
   log "使用 ${manager} 安装软件包：$*"
   if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
