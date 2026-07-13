@@ -108,17 +108,38 @@ verify_node() {
 verify_install_node() {
   local ip="$1"
   log "verify install files on $ip"
-  run_remote_retry "$ip" "test -x '$ETCD_BIN_DIR/etcd' && \
-    test -x '$ETCD_BIN_DIR/etcdctl' && \
-    test -f '$ETCD_CONFIG_FILE' && \
-    test -f '$PATRONI_HOME/patroni.yml' && \
-    test -x '$PATRONI_BIN' && \
-    test -x '$PATRONICTL_BIN' && \
-    test -x '$PG_PREFIX/bin/postgres' && \
-    test -x '$PG_PROBACKUP_BINARY' && \
-    test -x '$PG_PROBACKUP_JOB_SCRIPT' && \
-    test -f /etc/systemd/system/etcd.service && \
-    test -f /etc/systemd/system/patroni.service"
+  run_remote_retry "$ip" "failed=0
+check_path() {
+  mode=\"\$1\"
+  path=\"\$2\"
+  case \"\$mode\" in
+    x) test -x \"\$path\" ;;
+    f) test -f \"\$path\" ;;
+    d) test -d \"\$path\" ;;
+    *) echo \"UNKNOWN-CHECK \$mode \$path\"; failed=1; return ;;
+  esac
+  if [ \"\$?\" -eq 0 ]; then
+    echo \"OK \$mode \$path\"
+  else
+    echo \"MISSING \$mode \$path\"
+    failed=1
+  fi
+}
+check_path x '$ETCD_BIN_DIR/etcd'
+check_path x '$ETCD_BIN_DIR/etcdctl'
+check_path x '$ETCD_BIN_DIR/etcdutl'
+check_path f '$ETCD_CONFIG_FILE'
+check_path f '$PATRONI_HOME/patroni.yml'
+check_path x '$PATRONI_BIN'
+check_path x '$PATRONICTL_BIN'
+check_path x '$PG_PREFIX/bin/postgres'
+check_path x '$PG_PREFIX/bin/pg_config'
+check_path x '$PG_PROBACKUP_BINARY'
+check_path x '$PG_PROBACKUP_JOB_SCRIPT'
+check_path f /etc/cron.d/pg-probackup-ha
+check_path f /etc/systemd/system/etcd.service
+check_path f /etc/systemd/system/patroni.service
+exit \"\$failed\""
 }
 
 create_database_extensions() {

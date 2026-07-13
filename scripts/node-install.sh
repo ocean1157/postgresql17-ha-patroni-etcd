@@ -337,6 +337,7 @@ install_patroni() {
     if [[ -n "${PIP_SOURCE:-}" ]]; then
       pip_args+=("${PIP_SOURCE_ARGS[@]}")
     fi
+    run_with_heartbeat "Patroni venv pip bootstrap online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --upgrade "${pip_args[@]}" "pip<22" setuptools wheel
     run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   }
 
@@ -344,6 +345,7 @@ install_patroni() {
     [[ -d "$wheel_dir" ]] && compgen -G "$wheel_dir/*" >/dev/null || return 1
     local -a pip_args=(--retries 10 --timeout 120 --no-index --find-links "$wheel_dir")
     log "using packages/python local Python packages with pip --no-index"
+    run_with_heartbeat "Patroni venv pip bootstrap local" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" --upgrade "pip<22" setuptools wheel
     run_with_heartbeat "Patroni pip install local" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   }
 

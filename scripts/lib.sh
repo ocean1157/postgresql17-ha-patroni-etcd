@@ -592,7 +592,9 @@ rpm_repo_install() {
     done
   fi
   yum_source_args
-  repo_opts+=("${YUM_SOURCE_ARGS[@]}")
+  if [[ "${YUM_SOURCE_ARGS+x}" == "x" ]]; then
+    repo_opts+=("${YUM_SOURCE_ARGS[@]}")
+  fi
   local rpm_dir=""
 
   rpm_install_local() {
@@ -601,9 +603,19 @@ rpm_repo_install() {
     [[ -f "$rpm_dir/repodata/repomd.xml" ]] || die "packages/rpm exists but has no repodata. Re-run scripts/download-package.sh on an online host that matches the target OS major version and architecture"
     assert_offline_environment_matches "$rpm_dir"
     log "using packages/rpm local repository with online repositories disabled: $*"
+    local local_repo_dir="/tmp/pg-ha-local-rpm-repo"
+    rm -rf "$local_repo_dir"
+    mkdir -p "$local_repo_dir"
+    cat > "$local_repo_dir/pg-ha-local.repo" <<EOF
+[pg-ha-local]
+name=pg-ha-local
+baseurl=file://$rpm_dir
+enabled=1
+gpgcheck=0
+EOF
     "$manager" \
       --disablerepo='*' \
-      --repofrompath="pg-ha-local,file://$rpm_dir" \
+      --setopt="reposdir=$local_repo_dir" \
       --enablerepo=pg-ha-local \
       --setopt=multilib_policy=best \
       --nogpgcheck \
@@ -661,7 +673,7 @@ sshpass
 EOF
   case "$compat" in
     el7)
-      printf '%s\n' python36 python36-devel python36-pip yum-utils
+      printf '%s\n' python3 python3-devel python3-pip yum-utils
       ;;
     el8)
       printf '%s\n' python3 python3-devel python3-pip
@@ -675,7 +687,7 @@ EOF
 rpm_python_packages() {
   case "$(current_os_compat_id)" in
     el7)
-      printf '%s\n' python36 python36-pip
+      printf '%s\n' python3 python3-pip
       ;;
     *)
       printf '%s\n' python3 python3-pip
