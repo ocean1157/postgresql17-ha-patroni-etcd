@@ -292,6 +292,180 @@ detect_arch() {
   esac
 }
 
+rpm_arch() {
+  uname -m
+}
+
+os_release_value() {
+  local key="$1" value
+  value="$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' /etc/os-release 2>/dev/null || true)"
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s\n' "$value"
+}
+
+current_os_id() {
+  local id
+  id="$(os_release_value ID)"
+  printf '%s\n' "${id:-unknown}"
+}
+
+current_os_version() {
+  local version
+  version="$(os_release_value VERSION_ID)"
+  printf '%s\n' "${version:-unknown}"
+}
+
+current_os_major() {
+  local version major
+  version="$(current_os_version)"
+  major="${version%%.*}"
+  [[ "$major" =~ ^[0-9]+$ ]] || major="unknown"
+  printf '%s\n' "$major"
+}
+
+os_compat_from_id_version() {
+  local id="$1" version="$2" major
+  id="${id,,}"
+  major="${version%%.*}"
+  [[ "$major" =~ ^[0-9]+$ ]] || return 1
+
+  case "$id" in
+    centos|rhel|redhat|rocky|almalinux|anolis|ol|oracle|oraclelinux)
+      printf 'el%s\n' "$major"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+current_os_compat_id() {
+  local id version major like compat
+  id="$(current_os_id)"
+  version="$(current_os_version)"
+  if compat="$(os_compat_from_id_version "$id" "$version")"; then
+    printf '%s\n' "$compat"
+    return 0
+  fi
+
+  major="$(current_os_major)"
+  like=" $(os_release_value ID_LIKE) "
+  if [[ "$major" =~ ^[0-9]+$ && ( "$like" == *" rhel "* || "$like" == *" centos "* || "$like" == *" fedora "* ) ]]; then
+    printf 'el%s\n' "$major"
+    return 0
+  fi
+
+  printf 'unknown\n'
+}
+
+current_os_id_version() {
+  printf '%s %s\n' "$(current_os_id)" "$(current_os_version)"
+}
+
+current_os_pretty() {
+  local pretty
+  pretty="$(os_release_value PRETTY_NAME)"
+  printf '%s\n' "${pretty:-$(current_os_id_version)}"
+}
+
+require_supported_rpm_os() {
+  local compat
+  compat="$(current_os_compat_id)"
+  case "$compat" in
+    el7|el8) return 0 ;;
+    *) die "unsupported RPM OS: $(current_os_pretty). Supported: CentOS 7 compatible OS and Anolis/RHEL/CentOS 8 compatible OS" ;;
+  esac
+}
+
+rpm_package_manager() {
+  local compat
+  compat="$(current_os_compat_id)"
+  case "$compat" in
+    el7)
+      if command -v yum >/dev/null 2>&1; then printf 'yum\n'; return 0; fi
+      if command -v dnf >/dev/null 2>&1; then printf 'dnf\n'; return 0; fi
+      ;;
+    el8)
+      if command -v dnf >/dev/null 2>&1; then printf 'dnf\n'; return 0; fi
+      if command -v yum >/dev/null 2>&1; then printf 'yum\n'; return 0; fi
+      ;;
+    *)
+      if command -v dnf >/dev/null 2>&1; then printf 'dnf\n'; return 0; fi
+      if command -v yum >/dev/null 2>&1; then printf 'yum\n'; return 0; fi
+      ;;
+  esac
+  return 1
+}
+
+current_python_tag() {
+  python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])' 2>/dev/null || printf 'unknown\n'
+}
+
+ensure_python3_command() {
+  if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local py py_path pip_path
+  for py in python3.12 python3.11 python3.10 python3.9 python3.8 python3.7 python3.6; do
+    if command -v "$py" >/dev/null 2>&1; then
+      py_path="$(command -v "$py")"
+      mkdir -p /usr/local/bin
+      [[ -e /usr/local/bin/python3 ]] || ln -s "$py_path" /usr/local/bin/python3
+      break
+    fi
+  done
+
+  if command -v python3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
+    for py in pip3.12 pip3.11 pip3.10 pip3.9 pip3.8 pip3.7 pip3.6 pip3; do
+      if command -v "$py" >/dev/null 2>&1; then
+        pip_path="$(command -v "$py")"
+        mkdir -p /usr/local/bin
+        [[ -e /usr/local/bin/pip3 ]] || ln -s "$pip_path" /usr/local/bin/pip3
+        break
+      fi
+    done
+  fi
+
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -m pip --version >/dev/null 2>&1
+}
+
+select_rpm_package_dir() {
+  local compat arch candidate
+  compat="$(current_os_compat_id)"
+  arch="$(rpm_arch)"
+  for candidate in \
+    "$PROJECT_DIR/packages/rpm/$compat/$arch" \
+    "$PROJECT_DIR/packages/rpm/$compat" \
+    "$PROJECT_DIR/packages/rpm"; do
+    [[ -d "$candidate" ]] || continue
+    compgen -G "$candidate/*.rpm" >/dev/null || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+select_python_package_dir() {
+  local tag arch compat candidate
+  tag="$(current_python_tag)"
+  arch="$(rpm_arch)"
+  compat="$(current_os_compat_id)"
+  for candidate in \
+    "$PROJECT_DIR/packages/python/$compat/$tag/$arch" \
+    "$PROJECT_DIR/packages/python/$tag/$arch" \
+    "$PROJECT_DIR/packages/python/$tag" \
+    "$PROJECT_DIR/packages/python"; do
+    [[ -d "$candidate" ]] || continue
+    compgen -G "$candidate/*" >/dev/null || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
 current_ip() {
   local item ip
   for item in "${PG_NODES[@]}" "${ETCD_NODES[@]}"; do
@@ -305,10 +479,10 @@ current_ip() {
 }
 
 pkg_install() {
-  if command -v dnf >/dev/null 2>&1; then
-    rpm_repo_install dnf "$@"
-  elif command -v yum >/dev/null 2>&1; then
-    rpm_repo_install yum "$@"
+  local manager
+  if manager="$(rpm_package_manager)"; then
+    require_supported_rpm_os
+    rpm_repo_install "$manager" "$@"
   elif command -v apt-get >/dev/null 2>&1; then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
@@ -351,7 +525,21 @@ yum_source_args() {
     fi
     YUM_SOURCE_ARGS=(--setopt="reposdir=$repo_dir")
   elif is_url "$YUM_SOURCE" || [[ "$YUM_SOURCE" == /* ]]; then
-    YUM_SOURCE_ARGS=(--repofrompath="cluster-source,$YUM_SOURCE" --enablerepo=cluster-source)
+    local repo_dir="/tmp/pg-ha-yum-repos" baseurl
+    mkdir -p "$repo_dir"
+    if is_url "$YUM_SOURCE"; then
+      baseurl="$YUM_SOURCE"
+    else
+      baseurl="file://$YUM_SOURCE"
+    fi
+    cat > "$repo_dir/cluster-source.repo" <<EOF
+[cluster-source]
+name=cluster-source
+baseurl=$baseurl
+enabled=1
+gpgcheck=0
+EOF
+    YUM_SOURCE_ARGS=(--setopt="reposdir=$repo_dir" --enablerepo=cluster-source)
   else
     local i
     IFS=',' read -ra YUM_SOURCE_ARGS <<< "$YUM_SOURCE"
@@ -359,9 +547,42 @@ yum_source_args() {
   fi
 }
 
+manifest_value() {
+  local manifest="$1" key="$2"
+  awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$manifest" 2>/dev/null || true
+}
+
+assert_offline_environment_matches() {
+  local rpm_dir="${1:-}" manifest
+  manifest="$PROJECT_DIR/packages/OFFLINE-ENVIRONMENT.txt"
+  [[ -n "$rpm_dir" && -f "$rpm_dir/OFFLINE-ENVIRONMENT.txt" ]] && manifest="$rpm_dir/OFFLINE-ENVIRONMENT.txt"
+  [[ -f "$manifest" ]] || return 0
+
+  local built_os built_id built_version built_compat current_compat built_arch current_arch
+  built_os="$(manifest_value "$manifest" os)"
+  built_compat="$(manifest_value "$manifest" os_compat)"
+  if [[ -z "$built_compat" && -n "$built_os" ]]; then
+    built_id="${built_os%% *}"
+    built_version="${built_os#* }"
+    built_compat="$(os_compat_from_id_version "$built_id" "$built_version" || true)"
+  fi
+
+  current_compat="$(current_os_compat_id)"
+  if [[ -n "$built_compat" && "$built_compat" != "$current_compat" ]]; then
+    die "offline RPM packages were built for '$built_compat', but current OS is '$current_compat' ($(current_os_pretty)). Re-run scripts/download-package.sh on a matching OS family: CentOS 7 => el7, Anolis 8.10 => el8"
+  fi
+
+  built_arch="$(manifest_value "$manifest" arch)"
+  current_arch="$(rpm_arch)"
+  if [[ -n "$built_arch" && "$built_arch" != "$current_arch" ]]; then
+    die "offline RPM packages were built for architecture '$built_arch', but current architecture is '$current_arch'"
+  fi
+}
+
 rpm_repo_install() {
   local manager="$1"
   shift
+  [[ "$#" -gt 0 ]] || die "${manager} install requested with no packages"
   local -a repo_opts=()
   local disabled_repo
   if [[ -n "${YUM_DISABLE_REPOS:-}" ]]; then
@@ -372,23 +593,26 @@ rpm_repo_install() {
   fi
   yum_source_args
   repo_opts+=("${YUM_SOURCE_ARGS[@]}")
-  local rpm_dir="$PROJECT_DIR/packages/rpm"
+  local rpm_dir=""
 
   rpm_install_local() {
-    [[ -d "$rpm_dir" ]] && compgen -G "$rpm_dir/*.rpm" >/dev/null || return 1
+    rpm_dir="$(select_rpm_package_dir || true)"
+    [[ -n "$rpm_dir" ]] || return 1
     [[ -f "$rpm_dir/repodata/repomd.xml" ]] || die "packages/rpm exists but has no repodata. Re-run scripts/download-package.sh on an online host that matches the target OS major version and architecture"
+    assert_offline_environment_matches "$rpm_dir"
     log "using packages/rpm local repository with online repositories disabled: $*"
     "$manager" \
       --disablerepo='*' \
       --repofrompath="pg-ha-local,file://$rpm_dir" \
       --enablerepo=pg-ha-local \
       --setopt=multilib_policy=best \
+      --nogpgcheck \
       install -y "$@"
   }
 
   local offline_mode="${OFFLINE_INSTALL,,}"
   if [[ "$offline_mode" == "true" ]]; then
-    rpm_install_local || die "offline_install=true but local RPM repository install failed. Check packages/rpm, OS major version, CPU architecture, and yum conflict messages above"
+    rpm_install_local "$@" || die "offline_install=true but local RPM repository install failed. Check packages/rpm, OS major version, CPU architecture, and dnf/yum conflict messages above"
     return 0
   fi
 
@@ -406,12 +630,14 @@ rpm_repo_install() {
 
   if [[ "$offline_mode" != "false" ]]; then
     log "${manager} online repositories unavailable; falling back to packages/rpm"
-    rpm_install_local && return 0
+    rpm_install_local "$@" && return 0
   fi
 
   die "${manager} install failed. Check DNS, repository configuration, mirror availability, or prepare packages/rpm with scripts/download-package.sh"
 }
 rpm_prereq_packages() {
+  local compat
+  compat="$(current_os_compat_id)"
   cat <<'EOF'
 gcc
 make
@@ -425,16 +651,34 @@ libicu-devel
 perl
 tar
 gzip
-python3
-python3-devel
-python3-pip
 sudo
 chrony
 iproute
 iputils
-yum-utils
 cronie
 openssh-clients
 sshpass
 EOF
+  case "$compat" in
+    el7)
+      printf '%s\n' python36 python36-devel python36-pip yum-utils
+      ;;
+    el8)
+      printf '%s\n' python3 python3-devel python3-pip
+      ;;
+    *)
+      printf '%s\n' python3 python3-devel python3-pip
+      ;;
+  esac
+}
+
+rpm_python_packages() {
+  case "$(current_os_compat_id)" in
+    el7)
+      printf '%s\n' python36 python36-pip
+      ;;
+    *)
+      printf '%s\n' python3 python3-pip
+      ;;
+  esac
 }

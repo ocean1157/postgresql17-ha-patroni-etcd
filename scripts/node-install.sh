@@ -54,6 +54,7 @@ install_prereqs() {
     else
       pkg_install "${missing_pkgs[@]}"
     fi
+    ensure_python3_command || die "python3 and pip are required after installing system dependencies"
   elif command -v apt-get >/dev/null 2>&1; then
     pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
   else
@@ -292,7 +293,10 @@ install_patroni() {
     return 0
   fi
 
-  local wheel_dir="$PROJECT_DIR/packages/python"
+  local wheel_dir selected_wheel_dir
+  wheel_dir="$PROJECT_DIR/packages/python"
+  selected_wheel_dir="$(select_python_package_dir || true)"
+  [[ -n "$selected_wheel_dir" ]] && wheel_dir="$selected_wheel_dir"
   local offline_mode="${OFFLINE_INSTALL,,}"
 
   pip_install_virtualenv_online() {

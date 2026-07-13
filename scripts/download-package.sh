@@ -8,12 +8,16 @@ source "$PROJECT_DIR/scripts/lib.sh"
 load_config
 
 ARCH="$(detect_arch)"
+require_supported_rpm_os
+OS_COMPAT="$(current_os_compat_id)"
+RPM_ARCH="$(rpm_arch)"
 PACKAGE_DIR="$PROJECT_DIR/packages"
-RPM_DIR="$PACKAGE_DIR/rpm"
-PYTHON_DIR="$PACKAGE_DIR/python"
+RPM_DIR="$PACKAGE_DIR/rpm/$OS_COMPAT/$RPM_ARCH"
+PYTHON_ROOT_DIR="$PACKAGE_DIR/python"
+PYTHON_DIR="$PYTHON_ROOT_DIR"
 DOWNLOAD_REPO_DIR="$PACKAGE_DIR/.download-repos"
 declare -a DOWNLOAD_REPO_OPTS=()
-mkdir -p "$RPM_DIR" "$PYTHON_DIR"
+mkdir -p "$RPM_DIR" "$PYTHON_ROOT_DIR"
 
 download() {
   local url="$1" output="$2"
@@ -54,7 +58,17 @@ prepare_repo_options() {
     fi
     DOWNLOAD_REPO_OPTS=(--setopt="reposdir=$DOWNLOAD_REPO_DIR")
   elif is_url "$YUM_SOURCE" || [[ "$YUM_SOURCE" == /* ]]; then
-    DOWNLOAD_REPO_OPTS=(--repofrompath="cluster-source,$YUM_SOURCE" --enablerepo=cluster-source)
+    mkdir -p "$DOWNLOAD_REPO_DIR"
+    local baseurl="$YUM_SOURCE"
+    [[ "$YUM_SOURCE" == /* ]] && baseurl="file://$YUM_SOURCE"
+    cat > "$DOWNLOAD_REPO_DIR/cluster-source.repo" <<EOF
+[cluster-source]
+name=cluster-source
+baseurl=$baseurl
+enabled=1
+gpgcheck=0
+EOF
+    DOWNLOAD_REPO_OPTS=(--setopt="reposdir=$DOWNLOAD_REPO_DIR" --enablerepo=cluster-source)
   else
     local id ids
     IFS=',' read -ra ids <<< "$YUM_SOURCE"
@@ -86,9 +100,11 @@ ensure_createrepo() {
     return 0
   fi
   log "createrepo not found; installing it on this online preparation host"
-  if command -v dnf >/dev/null 2>&1; then
+  local manager
+  manager="$(rpm_package_manager)" || die "yum or dnf is required to install createrepo"
+  if [[ "$manager" == "dnf" ]]; then
     run_repo_command dnf install -y createrepo_c || run_repo_command dnf install -y createrepo
-  elif command -v yum >/dev/null 2>&1; then
+  elif [[ "$manager" == "yum" ]]; then
     run_repo_command yum install -y createrepo || run_repo_command yum install -y createrepo_c
   else
     die "createrepo or createrepo_c is required to build packages/rpm metadata"
@@ -109,20 +125,23 @@ write_rpm_repo_metadata() {
 }
 
 download_rpms() {
+  local manager
   local -a pkgs
   # shellcheck disable=SC2207
   pkgs=($(rpm_prereq_packages))
   prepare_repo_options
+  manager="$(rpm_package_manager)" || die "RPM packages must be prepared on an online host with yum/dnf"
   log "[2/4] download yum/dnf RPM packages into $RPM_DIR"
+  log "OS compatibility: $(current_os_pretty), $OS_COMPAT, arch=$RPM_ARCH"
   log "RPM root packages: ${pkgs[*]}"
 
-  if command -v dnf >/dev/null 2>&1; then
+  if [[ "$manager" == "dnf" ]]; then
     if ! dnf download --help >/dev/null 2>&1; then
       log "dnf download plugin missing; installing dnf-plugins-core on this online preparation host"
       run_repo_command dnf install -y dnf-plugins-core
     fi
     run_repo_command dnf download --resolve --alldeps --destdir "$RPM_DIR" "${pkgs[@]}"
-  elif command -v yum >/dev/null 2>&1; then
+  elif [[ "$manager" == "yum" ]]; then
     log "install yum-utils on this online preparation host for repotrack"
     run_repo_command yum install -y yum-utils
     command -v repotrack >/dev/null 2>&1 || die "repotrack is required but was not found after installing yum-utils"
@@ -137,20 +156,27 @@ download_rpms() {
 
 download_python() {
   local -a source_args=()
-  log "[3/4] download pip packages into $PYTHON_DIR"
-  if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
+  local manager python_tag
+  log "[3/4] download pip packages"
+  if ! ensure_python3_command; then
     log "python3 or python3-pip missing; installing them on this online preparation host"
     prepare_repo_options
-    if command -v dnf >/dev/null 2>&1; then
-      run_repo_command dnf install -y python3 python3-pip
-    elif command -v yum >/dev/null 2>&1; then
-      run_repo_command yum install -y python3 python3-pip
+    # shellcheck disable=SC2207
+    local -a python_pkgs=($(rpm_python_packages))
+    manager="$(rpm_package_manager)" || die "python3 and python3-pip are required to download Python packages"
+    if [[ "$manager" == "dnf" ]]; then
+      run_repo_command dnf install -y "${python_pkgs[@]}"
+    elif [[ "$manager" == "yum" ]]; then
+      run_repo_command yum install -y "${python_pkgs[@]}"
     else
       die "python3 and python3-pip are required to download Python packages"
     fi
   fi
-  command -v python3 >/dev/null 2>&1 || die "python3 is required"
-  python3 -m pip --version >/dev/null 2>&1 || die "python3-pip is required"
+  ensure_python3_command || die "python3 and python3-pip are required"
+  python_tag="$(current_python_tag)"
+  PYTHON_DIR="$PYTHON_ROOT_DIR/$OS_COMPAT/$python_tag/$RPM_ARCH"
+  mkdir -p "$PYTHON_DIR"
+  log "download pip packages into $PYTHON_DIR"
   pip_source_args
   if [[ -n "${PIP_SOURCE:-}" ]]; then
     source_args=("${PIP_SOURCE_ARGS[@]}")
@@ -181,18 +207,36 @@ download_sources() {
   download "https://github.com/citusdata/pg_cron/archive/refs/tags/v${PG_CRON_VERSION}.tar.gz" "$PACKAGE_DIR/pg_cron-${PG_CRON_VERSION}.tar.gz"
 }
 
-write_manifest() {
-  log "[4/4] write checksum and environment manifest"
-  cat > "$PACKAGE_DIR/OFFLINE-ENVIRONMENT.txt" <<EOF
+write_environment_manifest() {
+  local output="$1" rpm_count python_count rpm_rel python_rel
+  mkdir -p "$(dirname "$output")"
+  rpm_count="$(count_files "$RPM_DIR" "*.rpm")"
+  python_count="$(count_files "$PYTHON_DIR" "*")"
+  rpm_rel="${RPM_DIR#$PACKAGE_DIR/}"
+  python_rel="${PYTHON_DIR#$PACKAGE_DIR/}"
+  cat > "$output" <<EOF
 created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-os=$(source /etc/os-release 2>/dev/null; printf '%s %s' "${ID:-unknown}" "${VERSION_ID:-unknown}")
-arch=$(uname -m)
+os=$(current_os_id_version)
+os_pretty=$(current_os_pretty)
+os_compat=$OS_COMPAT
+os_major=$(current_os_major)
+arch=$RPM_ARCH
 python=$(python3 -c 'import platform; print(platform.python_version())')
+python_tag=$(current_python_tag)
 postgresql=$POSTGRES_VERSION
 patroni=$PATRONI_VERSION
-rpm_files=$(count_files "$RPM_DIR" "*.rpm")
-python_files=$(count_files "$PYTHON_DIR" "*")
+rpm_dir=$rpm_rel
+python_dir=$python_rel
+rpm_files=$rpm_count
+python_files=$python_count
 EOF
+}
+
+write_manifest() {
+  log "[4/4] write checksum and environment manifest"
+  write_environment_manifest "$PACKAGE_DIR/OFFLINE-ENVIRONMENT.txt"
+  write_environment_manifest "$RPM_DIR/OFFLINE-ENVIRONMENT.txt"
+  write_environment_manifest "$PYTHON_DIR/OFFLINE-ENVIRONMENT.txt"
   (cd "$PACKAGE_DIR" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$PACKAGE_DIR/SHA256SUMS"
 }
 
