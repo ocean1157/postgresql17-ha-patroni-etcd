@@ -376,13 +376,19 @@ rpm_repo_install() {
 
   rpm_install_local() {
     [[ -d "$rpm_dir" ]] && compgen -G "$rpm_dir/*.rpm" >/dev/null || return 1
-    log "using packages/rpm local RPMs with repositories disabled"
-    "$manager" --disablerepo='*' install -y "$rpm_dir"/*.rpm
+    [[ -f "$rpm_dir/repodata/repomd.xml" ]] || die "packages/rpm exists but has no repodata. Re-run scripts/download-package.sh on an online host that matches the target OS major version and architecture"
+    log "using packages/rpm local repository with online repositories disabled: $*"
+    "$manager" \
+      --disablerepo='*' \
+      --repofrompath="pg-ha-local,file://$rpm_dir" \
+      --enablerepo=pg-ha-local \
+      --setopt=multilib_policy=best \
+      install -y "$@"
   }
 
   local offline_mode="${OFFLINE_INSTALL,,}"
   if [[ "$offline_mode" == "true" ]]; then
-    rpm_install_local || die "offline_install=true but packages/rpm has no usable RPM packages"
+    rpm_install_local || die "offline_install=true but local RPM repository install failed. Check packages/rpm, OS major version, CPU architecture, and yum conflict messages above"
     return 0
   fi
 

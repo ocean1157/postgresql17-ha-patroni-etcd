@@ -81,6 +81,33 @@ run_repo_command() {
   fi
 }
 
+ensure_createrepo() {
+  if command -v createrepo_c >/dev/null 2>&1 || command -v createrepo >/dev/null 2>&1; then
+    return 0
+  fi
+  log "createrepo not found; installing it on this online preparation host"
+  if command -v dnf >/dev/null 2>&1; then
+    run_repo_command dnf install -y createrepo_c || run_repo_command dnf install -y createrepo
+  elif command -v yum >/dev/null 2>&1; then
+    run_repo_command yum install -y createrepo || run_repo_command yum install -y createrepo_c
+  else
+    die "createrepo or createrepo_c is required to build packages/rpm metadata"
+  fi
+}
+
+write_rpm_repo_metadata() {
+  ensure_createrepo
+  log "write RPM repository metadata into $RPM_DIR"
+  if command -v createrepo_c >/dev/null 2>&1; then
+    createrepo_c --update "$RPM_DIR"
+  elif command -v createrepo >/dev/null 2>&1; then
+    createrepo --update "$RPM_DIR"
+  else
+    die "createrepo or createrepo_c is required to build packages/rpm metadata"
+  fi
+  [[ -f "$RPM_DIR/repodata/repomd.xml" ]] || die "failed to create $RPM_DIR/repodata/repomd.xml"
+}
+
 download_rpms() {
   local -a pkgs
   # shellcheck disable=SC2207
@@ -105,6 +132,7 @@ download_rpms() {
   fi
 
   require_files "$RPM_DIR" "*.rpm" "RPM packages"
+  write_rpm_repo_metadata
 }
 
 download_python() {
