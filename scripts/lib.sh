@@ -374,7 +374,7 @@ rpm_repo_install() {
   repo_opts+=("${YUM_SOURCE_ARGS[@]}")
   local rpm_dir="$PROJECT_DIR/packages/rpm"
   if [[ -d "$rpm_dir" ]] && compgen -G "$rpm_dir/*.rpm" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
-    log "使用 packages/rpm 离线依赖包（整批事务解析依赖，不依赖文件顺序）"
+    log "使用 packages/rpm 本地依赖包；已禁用全部软件仓库，不访问 yum/dnf 网络源"
     "$manager" --disablerepo='*' install -y "$rpm_dir"/*.rpm
     return
   elif [[ "${OFFLINE_INSTALL,,}" == "true" ]]; then

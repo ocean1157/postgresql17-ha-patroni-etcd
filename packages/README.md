@@ -7,7 +7,7 @@
 - `pg_probackup-2.5.16.tar.gz`：pg_probackup 源码包。
 - `pg_cron-1.6.7.tar.gz`：pg_cron 源码包。
 
-执行 `scripts/download-packages.sh` 会准备一个可整体搬运和重新打包的离线目录：
+执行 `scripts/download-package.sh`（也可使用兼容名 `download-packages.sh`）会准备一个可整体搬运和重新打包的离线目录：
 
 - 根目录保存 PostgreSQL、etcd、pg_probackup、pg_cron 核心包；
 - `rpm/` 保存编译和运行所需 RPM 及其递归依赖；

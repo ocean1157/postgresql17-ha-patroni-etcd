@@ -307,7 +307,7 @@ install_patroni() {
   local wheel_dir="$PROJECT_DIR/packages/python"
   local -a pip_args=(--retries 10 --timeout 120)
   if [[ -d "$wheel_dir" ]] && compgen -G "$wheel_dir/*" >/dev/null && [[ "${OFFLINE_INSTALL,,}" != "false" ]]; then
-    log "使用 packages/python 离线安装 Python 依赖"
+    log "使用 packages/python 本地安装 Python 依赖；--no-index 禁止访问 pip 网络源"
     pip_args+=(--no-index --find-links "$wheel_dir")
   elif [[ "${OFFLINE_INSTALL,,}" == "true" ]]; then
     die "offline_install=true，但 packages/python 中没有 Python 包"
