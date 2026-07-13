@@ -296,8 +296,13 @@ install_patroni() {
   local offline_mode="${OFFLINE_INSTALL,,}"
 
   pip_install_virtualenv_online() {
+    local -a virtualenv_args=(install --upgrade --user)
     pip_source_args
-    python3 -m pip install --upgrade --user "${PIP_SOURCE_ARGS[@]}" virtualenv
+    if [[ -n "${PIP_SOURCE:-}" ]]; then
+      virtualenv_args+=("${PIP_SOURCE_ARGS[@]}")
+    fi
+    virtualenv_args+=(virtualenv)
+    python3 -m pip "${virtualenv_args[@]}"
   }
 
   pip_install_virtualenv_local() {
@@ -325,7 +330,9 @@ install_patroni() {
   patroni_pip_install_online() {
     local -a pip_args=(--retries 10 --timeout 120)
     pip_source_args
-    pip_args+=("${PIP_SOURCE_ARGS[@]}")
+    if [[ -n "${PIP_SOURCE:-}" ]]; then
+      pip_args+=("${PIP_SOURCE_ARGS[@]}")
+    fi
     run_with_heartbeat "Patroni pip install online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install "${pip_args[@]}" "patroni[etcd3]==${PATRONI_VERSION}" "psycopg2-binary==2.9.5" "ydiff==1.4.2" cdiff
   }
 
