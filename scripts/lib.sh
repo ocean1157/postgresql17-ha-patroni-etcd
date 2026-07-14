@@ -176,6 +176,19 @@ map_config_aliases() {
   CLUSTER_NODES=("${PG_NODES[@]}")
 }
 
+node_has_role() {
+  local wanted_ip="$1" role="$2" item
+  case "$role" in
+    postgresql) for item in "${PG_NODES[@]}"; do [[ "${item#*:}" == "$wanted_ip" ]] && return 0; done ;;
+    etcd) for item in "${ETCD_NODES[@]}"; do [[ "${item#*:}" == "$wanted_ip" ]] && return 0; done ;;
+    *) die "unknown node role: $role" ;;
+  esac
+  return 1
+}
+
+is_postgresql_node() { node_has_role "$1" postgresql; }
+is_etcd_node() { node_has_role "$1" etcd; }
+
 require_database_passwords() {
   [[ -n "$POSTGRES_SUPERPASS" ]] || die "config [postgresql.auth] superpass cannot be empty"
   [[ -n "$REPLICATION_PASS" ]] || die "config [postgresql.auth] replication_pass cannot be empty"
@@ -221,6 +234,20 @@ node_name_by_ip() {
   return 1
 }
 
+node_name_by_ip_role() {
+  local ip="$1" role="$2" item
+  case "$role" in
+    postgresql)
+      for item in "${PG_NODES[@]}"; do [[ "${item#*:}" == "$ip" ]] && printf '%s\n' "${item%%:*}" && return 0; done
+      ;;
+    etcd)
+      for item in "${ETCD_NODES[@]}"; do [[ "${item#*:}" == "$ip" ]] && printf '%s\n' "${item%%:*}" && return 0; done
+      ;;
+    *) die "unknown node role: $role" ;;
+  esac
+  return 1
+}
+
 node_ip_by_name() {
   local wanted="$1" item name node_ip
   for item in "${PG_NODES[@]}" "${ETCD_NODES[@]}"; do
@@ -247,6 +274,13 @@ all_node_ips() {
 pg_node_ips() {
   local item
   for item in "${PG_NODES[@]}"; do
+    printf '%s\n' "${item#*:}"
+  done
+}
+
+etcd_node_ips() {
+  local item
+  for item in "${ETCD_NODES[@]}"; do
     printf '%s\n' "${item#*:}"
   done
 }
@@ -282,6 +316,10 @@ etcd_client_endpoints() {
 
 primary_ip() {
   printf '%s\n' "${CLUSTER_NODES[0]#*:}"
+}
+
+primary_etcd_ip() {
+  printf '%s\n' "${ETCD_NODES[0]#*:}"
 }
 
 detect_arch() {
@@ -682,6 +720,18 @@ EOF
       printf '%s\n' python3 python3-devel python3-pip
       ;;
   esac
+}
+
+rpm_etcd_prereq_packages() {
+  cat <<'EOF'
+tar
+gzip
+sudo
+chrony
+iproute
+iputils
+openssh-clients
+EOF
 }
 
 rpm_python_packages() {

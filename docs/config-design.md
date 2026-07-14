@@ -46,7 +46,7 @@ nosync="false"
 - `parallel_jobs="1"`：串行部署，适合 yum 源不稳定或虚拟机磁盘压力较大时排障。
 - `parallel_jobs="2"`：限制最多两个节点同时执行。
 
-`deploy.sh` 会并发执行项目分发、节点安装、systemd enable、etcd 启动、Patroni 启动和服务验证。etcd 健康检查和 Patroni 集群检查仍然按顺序等待，因为这些步骤依赖集群状态。
+`deploy.sh` 会对 `[etcd] nodes` 和 `[postgresql] nodes` 的并集分发项目，并按节点角色执行安装、systemd enable、启动和验证。两个节点列表可以不同；etcd 健康检查在首个 etcd 节点执行，Patroni 集群操作在首个 PostgreSQL 节点执行。
 
 脚本支持复跑：已安装的 PostgreSQL、etcd、pg_probackup 会跳过重复安装；系统 RPM 依赖会先检查缺失包，只安装缺失项；Patroni 版本一致时会跳过 pip 安装。yum/dnf 安装失败时会清理缓存并自动重试一次。
 

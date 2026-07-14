@@ -45,15 +45,25 @@ cd /path/to/postgresql17-ha-patroni-etcd
 bash scripts/deploy.sh
 ```
 
-`deploy.sh` 会把项目分发到其他节点，并在三台机器上执行节点安装。若 `ssh_password` 非空且未配置免密 SSH，脚本会尝试安装/使用 `sshpass`。
+`deploy.sh` 会把项目分发到 `[etcd] nodes` 与 `[postgresql] nodes` 的节点并按角色安装。两个列表可以不同：etcd 节点只安装/运行 etcd，PostgreSQL 节点只安装/运行 PostgreSQL、Patroni、扩展与备份组件；同时出现在两个列表中的节点会安装两种角色。若 `ssh_password` 非空且未配置免密 SSH，脚本会尝试安装/使用 `sshpass`。
+
+例如 3 个 etcd 节点、2 个 PostgreSQL/Patroni 节点：
+
+```ini
+[etcd]
+nodes="node1:10.0.0.1,node2:10.0.0.2,node3:10.0.0.3"
+
+[postgresql]
+nodes="node1:10.0.0.1,node2:10.0.0.2"
+```
 
 部署过程会显式写入并启用 `etcd.service`、`patroni.service`，按如下顺序启动：
 
 1. 所有节点完成软件安装和 systemd unit 写入。
-2. 所有节点执行 `systemctl daemon-reload` 和 `systemctl enable`。
-3. 非阻塞启动三节点 etcd，并等待 etcd endpoint health。
-4. 启动三节点 Patroni，并等待 Patroni 集群出现 Leader 和 streaming Replica。
-5. 校验每个节点 `etcd.service`、`patroni.service` 均为 enabled/active。
+2. 各节点仅启用其角色对应的 systemd 单元。
+3. 启动配置中的全部 etcd 节点，并等待所有 endpoint health。
+4. 启动配置中的全部 Patroni 节点，并等待 Patroni 集群出现 Leader 和 streaming Replica。
+5. 按节点角色分别校验 `etcd.service` 或 `patroni.service` 为 enabled/active。
 
 ## 生产部署建议
 

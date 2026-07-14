@@ -13,9 +13,15 @@ load_config
 
 ARCH="$(detect_arch)"
 MY_IP="$(current_ip)"
-MY_NAME="$(node_name_by_ip "$MY_IP" || true)"
-[[ -n "$MY_NAME" ]] || die "current node IP $MY_IP is not present in CLUSTER_NODES"
+MY_POSTGRESQL_NAME="$(node_name_by_ip_role "$MY_IP" postgresql || true)"
+MY_ETCD_NAME="$(node_name_by_ip_role "$MY_IP" etcd || true)"
+MY_NAME="${MY_POSTGRESQL_NAME:-$MY_ETCD_NAME}"
+[[ -n "$MY_NAME" ]] || die "current node IP $MY_IP is not present in PostgreSQL or etcd nodes"
 apply_node_overrides "$MY_NAME"
+IS_POSTGRESQL_NODE=false
+IS_ETCD_NODE=false
+is_postgresql_node "$MY_IP" && IS_POSTGRESQL_NODE=true
+is_etcd_node "$MY_IP" && IS_ETCD_NODE=true
 
 is_true() {
   [[ "${1,,}" == "true" || "$1" == "1" || "${1,,}" == "yes" || "${1,,}" == "on" ]]
@@ -40,23 +46,34 @@ run_with_heartbeat() {
 install_prereqs() {
   log "install system dependencies according to repository mode"
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-    local pkg
+    local pkg missing_count=0
     local -a prereq_pkgs missing_pkgs=()
     # shellcheck disable=SC2207
-    prereq_pkgs=($(rpm_prereq_packages))
+    if is_true "$IS_POSTGRESQL_NODE"; then
+      prereq_pkgs=($(rpm_prereq_packages))
+    else
+      prereq_pkgs=($(rpm_etcd_prereq_packages))
+    fi
     for pkg in "${prereq_pkgs[@]}"; do
       if ! rpm -q "$pkg" >/dev/null 2>&1; then
         missing_pkgs+=("$pkg")
+        missing_count=$((missing_count + 1))
       fi
     done
-    if [[ "${#missing_pkgs[@]}" -eq 0 ]]; then
+    if [[ "$missing_count" -eq 0 ]]; then
       log "system dependencies already installed; skipping yum/dnf"
     else
       pkg_install "${missing_pkgs[@]}"
     fi
-    ensure_python3_command || die "python3 and pip are required after installing system dependencies"
+    if is_true "$IS_POSTGRESQL_NODE"; then
+      ensure_python3_command || die "python3 and pip are required after installing system dependencies"
+    fi
   elif command -v apt-get >/dev/null 2>&1; then
-    pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
+    if is_true "$IS_POSTGRESQL_NODE"; then
+      pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
+    else
+      pkg_install tar gzip sudo chrony
+    fi
   else
     die "no supported package manager found"
   fi
@@ -137,24 +154,48 @@ EOF
 configure_firewall() {
   if is_true "$OS_OPEN_FIREWALL_PORTS" && command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
     log "open firewall ports for PostgreSQL HA"
-    firewall-cmd --permanent --add-port="${POSTGRES_PORT}/tcp"
-    firewall-cmd --permanent --add-port="${PATRONI_PORT}/tcp"
-    firewall-cmd --permanent --add-port="${ETCD_CLIENT_PORT}/tcp"
-    firewall-cmd --permanent --add-port="${ETCD_PEER_PORT}/tcp"
+    if is_true "$IS_POSTGRESQL_NODE"; then
+      firewall-cmd --permanent --add-port="${POSTGRES_PORT}/tcp"
+      firewall-cmd --permanent --add-port="${PATRONI_PORT}/tcp"
+    fi
+    if is_true "$IS_ETCD_NODE"; then
+      firewall-cmd --permanent --add-port="${ETCD_CLIENT_PORT}/tcp"
+      firewall-cmd --permanent --add-port="${ETCD_PEER_PORT}/tcp"
+    fi
     firewall-cmd --reload
   fi
 }
 
 create_users_dirs() {
-  log "create postgres user and directories"
+  log "create directories for node roles: postgresql=$IS_POSTGRESQL_NODE etcd=$IS_ETCD_NODE"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
-  mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$ETCD_DATA" "$ETCD_BIN_DIR" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_BIN_DIR"
-  mkdir -p /var/run/postgresql
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR" "$ETCD_DATA" "$ETCD_BIN_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
-  chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
-  chmod 755 "$PG_PREFIX" "$ETCD_DATA" "$ETCD_BIN_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
-  chmod 775 /var/run/postgresql
-  chmod 700 "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR"
+  if is_true "$IS_ETCD_NODE"; then
+    mkdir -p "$ETCD_DATA" "$ETCD_BIN_DIR"
+    chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$ETCD_DATA" "$ETCD_BIN_DIR"
+    chmod 755 "$ETCD_DATA" "$ETCD_BIN_DIR"
+  fi
+  if is_true "$IS_POSTGRESQL_NODE"; then
+    mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_BIN_DIR" /var/run/postgresql
+    chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
+    chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
+    chmod 755 "$PG_PREFIX" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
+    chmod 775 /var/run/postgresql
+    chmod 700 "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR"
+  fi
+}
+
+reconcile_node_roles() {
+  # Preserve data and installed binaries, but make sure services generated by a
+  # previous topology cannot keep running after this node loses a role.
+  if ! is_true "$IS_POSTGRESQL_NODE" && [[ -f /etc/systemd/system/patroni.service ]]; then
+    systemctl disable --now patroni.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/patroni.service
+  fi
+  if ! is_true "$IS_ETCD_NODE" && [[ -f /etc/systemd/system/etcd.service ]]; then
+    systemctl disable --now etcd.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/etcd.service
+  fi
+  systemctl daemon-reload
 }
 
 write_postgres_env() {
@@ -369,8 +410,8 @@ write_etcd_config() {
   local initial_cluster
   initial_cluster="$(etcd_initial_cluster)"
   cat >"$ETCD_CONFIG_FILE" <<EOF
-name: ${MY_NAME}
-data-dir: ${ETCD_DATA}/${MY_NAME}
+name: ${MY_ETCD_NAME}
+data-dir: ${ETCD_DATA}/${MY_ETCD_NAME}
 initial-advertise-peer-urls: http://${MY_IP}:${ETCD_PEER_PORT}
 listen-peer-urls: http://${MY_IP}:${ETCD_PEER_PORT}
 listen-client-urls: http://${MY_IP}:${ETCD_CLIENT_PORT},http://127.0.0.1:${ETCD_CLIENT_PORT}
@@ -452,14 +493,14 @@ write_patroni_config() {
   local etcd_hosts
   etcd_hosts="$(etcd_hosts_yaml)"
   local tag_nofailover tag_noloadbalance tag_clonefrom tag_nosync
-  tag_nofailover="$(node_tag_value "$MY_NAME" nofailover false)"
-  tag_noloadbalance="$(node_tag_value "$MY_NAME" noloadbalance false)"
-  tag_clonefrom="$(node_tag_value "$MY_NAME" clonefrom false)"
-  tag_nosync="$(node_tag_value "$MY_NAME" nosync false)"
+  tag_nofailover="$(node_tag_value "$MY_POSTGRESQL_NAME" nofailover false)"
+  tag_noloadbalance="$(node_tag_value "$MY_POSTGRESQL_NAME" noloadbalance false)"
+  tag_clonefrom="$(node_tag_value "$MY_POSTGRESQL_NAME" clonefrom false)"
+  tag_nosync="$(node_tag_value "$MY_POSTGRESQL_NAME" nosync false)"
   cat >"$PATRONI_HOME/patroni.yml" <<EOF
 scope: ${SCOPE}
 namespace: /service/
-name: ${MY_NAME}
+name: ${MY_POSTGRESQL_NAME}
 
 restapi:
   listen: ${MY_IP}:${PATRONI_PORT}
@@ -598,7 +639,7 @@ mkdir -p "\$LOG_DIR"
 exec >>"\$LOG_DIR/pg_probackup-\$(date +%F).log" 2>&1
 
 echo "[\$(date '+%F %T')] pg_probackup job start on \$(hostname)"
-if ! ${PATRONICTL_BIN} -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="${MY_NAME}" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
+if ! ${PATRONICTL_BIN} -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="${MY_POSTGRESQL_NAME}" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
   echo "[\$(date '+%F %T')] current node is not Patroni leader, skip backup"
   exit 0
 fi
@@ -635,8 +676,8 @@ write_systemd() {
   cat >/etc/systemd/system/patroni.service <<EOF
 [Unit]
 Description=Patroni PostgreSQL HA manager
-Wants=network-online.target etcd.service
-After=network-online.target etcd.service
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
@@ -670,34 +711,42 @@ EOF
 
 start_services() {
   systemctl daemon-reload
-  systemctl enable etcd patroni
+  if is_true "$IS_ETCD_NODE"; then systemctl enable etcd; fi
+  if is_true "$IS_POSTGRESQL_NODE"; then systemctl enable patroni; fi
   if [[ "${SKIP_SERVICE_START:-0}" == "1" ]]; then
     log "service start skipped by SKIP_SERVICE_START=1"
     return 0
   fi
-  systemctl start --no-block etcd
-  sleep 3
-  systemctl start patroni
+  if is_true "$IS_ETCD_NODE"; then
+    systemctl start --no-block etcd
+    sleep 3
+  fi
+  if is_true "$IS_POSTGRESQL_NODE"; then systemctl start patroni; fi
 }
 
 main() {
-  require_database_passwords
+  if is_true "$IS_POSTGRESQL_NODE"; then require_database_passwords; fi
   install_prereqs
   configure_os
   configure_firewall
   create_users_dirs
-  write_postgres_env
-  install_postgres
-  install_pg_cron
-  install_etcd
-  install_pg_probackup
-  install_patroni
-  write_etcd_config
-  write_vip_callback
-  write_patroni_config
-  configure_pg_probackup
-  write_systemd
-  configure_profile
+  reconcile_node_roles
+  if is_true "$IS_ETCD_NODE"; then
+    install_etcd
+    write_etcd_config
+  fi
+  if is_true "$IS_POSTGRESQL_NODE"; then
+    write_postgres_env
+    install_postgres
+    install_pg_cron
+    install_pg_probackup
+    install_patroni
+    write_vip_callback
+    write_patroni_config
+    configure_pg_probackup
+    write_systemd
+    configure_profile
+  fi
   start_services
   log "node $MY_NAME ($MY_IP) installed"
 }

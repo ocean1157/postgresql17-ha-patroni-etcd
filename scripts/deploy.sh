@@ -88,10 +88,16 @@ install_node() {
   run_remote_retry "$ip" "cd '$remote_project_dir' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
 }
 
-enable_units() {
+enable_etcd_unit() {
   local ip="$1"
-  log "enable systemd units on $ip"
-  run_remote_retry "$ip" "systemctl daemon-reload && systemctl enable etcd.service patroni.service"
+  log "enable etcd systemd unit on $ip"
+  run_remote_retry "$ip" "systemctl daemon-reload && systemctl enable etcd.service"
+}
+
+enable_patroni_unit() {
+  local ip="$1"
+  log "enable Patroni systemd unit on $ip"
+  run_remote_retry "$ip" "systemctl daemon-reload && systemctl enable patroni.service"
 }
 
 start_etcd_node() {
@@ -106,15 +112,21 @@ start_patroni_node() {
   run_remote_retry "$ip" "systemctl reset-failed patroni.service || true; systemctl start patroni.service"
 }
 
-verify_node() {
+verify_etcd_node() {
   local ip="$1"
-  log "verify systemd services on $ip"
-  run_remote_retry "$ip" "systemctl is-enabled etcd.service patroni.service && systemctl is-active etcd.service patroni.service"
+  log "verify etcd service on $ip"
+  run_remote_retry "$ip" "systemctl is-enabled etcd.service && systemctl is-active etcd.service"
 }
 
-verify_install_node() {
+verify_patroni_node() {
   local ip="$1"
-  log "verify install files on $ip"
+  log "verify Patroni service on $ip"
+  run_remote_retry "$ip" "systemctl is-enabled patroni.service && systemctl is-active patroni.service"
+}
+
+verify_etcd_install_node() {
+  local ip="$1"
+  log "verify etcd install files on $ip"
   run_remote_retry "$ip" "failed=0
 check_path() {
   mode=\"\$1\"
@@ -136,6 +148,30 @@ check_path x '$ETCD_BIN_DIR/etcd'
 check_path x '$ETCD_BIN_DIR/etcdctl'
 check_path x '$ETCD_BIN_DIR/etcdutl'
 check_path f '$ETCD_CONFIG_FILE'
+check_path f /etc/systemd/system/etcd.service
+exit \"\$failed\""
+}
+
+verify_patroni_install_node() {
+  local ip="$1"
+  log "verify PostgreSQL/Patroni install files on $ip"
+  run_remote_retry "$ip" "failed=0
+check_path() {
+  mode=\"\$1\"
+  path=\"\$2\"
+  case \"\$mode\" in
+    x) test -x \"\$path\" ;;
+    f) test -f \"\$path\" ;;
+    d) test -d \"\$path\" ;;
+    *) echo \"UNKNOWN-CHECK \$mode \$path\"; failed=1; return ;;
+  esac
+  if [ \"\$?\" -eq 0 ]; then
+    echo \"OK \$mode \$path\"
+  else
+    echo \"MISSING \$mode \$path\"
+    failed=1
+  fi
+}
 check_path f '$PATRONI_HOME/patroni.yml'
 check_path x '$PATRONI_BIN'
 check_path x '$PATRONICTL_BIN'
@@ -144,7 +180,6 @@ check_path x '$PG_PREFIX/bin/pg_config'
 check_path x '$PG_PROBACKUP_BINARY'
 check_path x '$PG_PROBACKUP_JOB_SCRIPT'
 check_path f /etc/cron.d/pg-probackup-ha
-check_path f /etc/systemd/system/etcd.service
 check_path f /etc/systemd/system/patroni.service
 exit \"\$failed\""
 }
@@ -229,27 +264,34 @@ run_parallel_phase() {
 
 main() {
   local ip
-  local -a node_ips
+  local -a node_ips pg_ips etcd_ips
   # shellcheck disable=SC2207
   node_ips=($(all_node_ips))
+  # shellcheck disable=SC2207
+  pg_ips=($(pg_node_ips))
+  # shellcheck disable=SC2207
+  etcd_ips=($(etcd_node_ips))
 
   run_parallel_phase "分发项目" copy_project "${node_ips[@]}"
   run_parallel_phase "安装节点" install_node "${node_ips[@]}"
-  run_parallel_phase "校验安装文件" verify_install_node "${node_ips[@]}"
-  run_parallel_phase "启用 systemd 单元" enable_units "${node_ips[@]}"
-  run_parallel_phase "启动 etcd" start_etcd_node "${node_ips[@]}"
+  run_parallel_phase "校验 etcd 安装文件" verify_etcd_install_node "${etcd_ips[@]}"
+  run_parallel_phase "校验 PostgreSQL/Patroni 安装文件" verify_patroni_install_node "${pg_ips[@]}"
+  run_parallel_phase "启用 etcd systemd 单元" enable_etcd_unit "${etcd_ips[@]}"
+  run_parallel_phase "启用 Patroni systemd 单元" enable_patroni_unit "${pg_ips[@]}"
+  run_parallel_phase "启动 etcd" start_etcd_node "${etcd_ips[@]}"
 
   log "wait for etcd health"
-  run_remote_retry "$(primary_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
+  run_remote_retry "$(primary_etcd_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
 
-  run_parallel_phase "启动 patroni" start_patroni_node "${node_ips[@]}"
+  run_parallel_phase "启动 patroni" start_patroni_node "${pg_ips[@]}"
 
   log "wait for Patroni cluster"
   run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   apply_patroni_runtime_config
   create_database_extensions
-  run_parallel_phase "验证服务" verify_node "${node_ips[@]}"
+  run_parallel_phase "验证 etcd 服务" verify_etcd_node "${etcd_ips[@]}"
+  run_parallel_phase "验证 Patroni 服务" verify_patroni_node "${pg_ips[@]}"
 
   log "cluster deployment commands finished"
   log "check with: su - $POSTGRES_OS_USER -c '$PATRONICTL_BIN -c $PATRONI_HOME/patroni.yml list'"
