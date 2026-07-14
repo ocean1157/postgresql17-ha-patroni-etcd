@@ -204,13 +204,46 @@ create_database_extensions() {
       -c \"SELECT extname, extversion FROM pg_extension WHERE extname IN ('pg_cron','pg_stat_statements') ORDER BY extname;\""
 }
 
+initialize_pg_probackup_node() {
+  local ip="$1" remote_project_dir
+  remote_project_dir="$(node_project_dir "$ip")"
+  log "initialize pg_probackup on $ip"
+  run_remote_retry "$ip" "cd '$remote_project_dir' && PG_HARDWARE_DEFAULTS_RESOLVED=true bash scripts/node-install.sh --init-pg-probackup"
+}
+
+run_initial_full_backup_node() {
+  local ip="$1"
+  log "request initial FULL pg_probackup backup on $ip"
+  run_remote_retry "$ip" "su - '$POSTGRES_OS_USER' -c \"'$PG_PROBACKUP_JOB_SCRIPT' FULL\""
+}
+
+verify_initial_full_backup() {
+  local ip
+  for ip in $(pg_node_ips); do
+    if run_remote "$ip" "su - '$POSTGRES_OS_USER' -c \"'$PG_PROBACKUP_BINARY' show -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE'\" 2>/dev/null | grep -Eq 'FULL.*OK'"; then
+      log "initial FULL pg_probackup backup verified on $ip"
+      return 0
+    fi
+  done
+  die "initial FULL pg_probackup backup was not found with status OK on any PostgreSQL node"
+}
+
 apply_patroni_runtime_config() {
-  log "写入 Patroni 动态配置，确保 pg_cron 预加载参数对复跑生效"
+  log "写入 Patroni 全局动态配置，确保硬件参数和预加载参数对首次部署及复跑生效"
   run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' edit-config --force \
+    --set 'postgresql.parameters.shared_buffers=$PGCONF_SHARED_BUFFERS' \
+    --set 'postgresql.parameters.effective_cache_size=$PGCONF_EFFECTIVE_CACHE_SIZE' \
+    --set 'postgresql.parameters.max_connections=$PGCONF_MAX_CONNECTIONS' \
+    --set 'postgresql.parameters.maintenance_work_mem=$PGCONF_MAINTENANCE_WORK_MEM' \
+    --set 'postgresql.parameters.max_worker_processes=$PGCONF_MAX_WORKER_PROCESSES' \
+    --set 'postgresql.parameters.max_parallel_workers=$PGCONF_MAX_PARALLEL_WORKERS' \
+    --set 'postgresql.parameters.max_parallel_workers_per_gather=$PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER' \
     --set 'postgresql.parameters.shared_preload_libraries=$PGCONF_SHARED_PRELOAD_LIBRARIES' \
     --set 'postgresql.parameters.cron.database_name=$PGCONF_CRON_DATABASE_NAME'"
 
-  log "重启 Patroni 管理的 PostgreSQL 实例以加载 shared_preload_libraries"
+  log "等待 Patroni 将动态配置写入各节点"
+  sleep 5
+  log "重启 Patroni 管理的 PostgreSQL 实例以应用 postmaster 参数"
   run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' restart --force '$SCOPE'"
 
   log "wait for Patroni cluster after runtime config"
@@ -299,7 +332,10 @@ main() {
   run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   apply_patroni_runtime_config
+  run_parallel_phase "初始化 pg_probackup 实例" initialize_pg_probackup_node "${pg_ips[@]}"
   create_database_extensions
+  run_parallel_phase "执行首次 pg_probackup 全量备份" run_initial_full_backup_node "${pg_ips[@]}"
+  verify_initial_full_backup
   run_parallel_phase "验证 etcd 服务" verify_etcd_node "${etcd_ips[@]}"
   run_parallel_phase "验证 Patroni 服务" verify_patroni_node "${pg_ips[@]}"
 

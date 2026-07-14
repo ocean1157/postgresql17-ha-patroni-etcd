@@ -606,16 +606,9 @@ EOF
 }
 
 configure_pg_probackup() {
-  log "configure pg_probackup repository and cron"
+  log "configure pg_probackup cron"
   mkdir -p "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
   chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
-
-  if [[ ! -f "$PG_PROBACKUP_BACKUP_DIR/backups/${PG_PROBACKUP_INSTANCE}/pg_probackup.conf" ]]; then
-    su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY init -B '$PG_PROBACKUP_BACKUP_DIR'" >/dev/null 2>&1 || true
-    su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY add-instance -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' -D '$PG_DATA'" >/dev/null 2>&1 || true
-  fi
-
-  su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY set-config -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' --retention-redundancy='$PG_PROBACKUP_RETENTION_REDUNDANCY' --retention-window='$PG_PROBACKUP_RETENTION_WINDOW'" >/dev/null 2>&1 || true
 
   mkdir -p "$(dirname "$PG_PROBACKUP_JOB_SCRIPT")"
   cat >"$PG_PROBACKUP_JOB_SCRIPT" <<EOF
@@ -636,6 +629,7 @@ BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
 INSTANCE=${PG_PROBACKUP_INSTANCE}
 FULL_DAY=${PG_PROBACKUP_FULL_BACKUP_DAY}
 INCREMENTAL_MODE=${PG_PROBACKUP_INCREMENTAL_MODE}
+REQUESTED_MODE="\${1:-}"
 BACKUP_USER=${PG_PROBACKUP_BACKUP_USER}
 PG_PROBACKUP_BIN=${PG_PROBACKUP_BINARY}
 
@@ -648,7 +642,9 @@ if ! ${PATRONICTL_BIN} -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v 
   exit 0
 fi
 
-if [[ "\$(date +%w)" == "\$FULL_DAY" ]]; then
+if [[ "\$REQUESTED_MODE" == "FULL" ]]; then
+  BACKUP_MODE=FULL
+elif [[ "\$(date +%w)" == "\$FULL_DAY" ]]; then
   BACKUP_MODE=FULL
 else
   BACKUP_MODE=\$INCREMENTAL_MODE
@@ -674,6 +670,24 @@ ${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${POSTGRES_OS_USER} 
 EOF
   chmod 0644 /etc/cron.d/pg-probackup-ha
   systemctl enable --now crond >/dev/null 2>&1 || true
+}
+
+initialize_pg_probackup_instance() {
+  log "initialize pg_probackup instance $PG_PROBACKUP_INSTANCE"
+  [[ -x "$PG_PROBACKUP_BINARY" ]] || die "pg_probackup binary not found: $PG_PROBACKUP_BINARY"
+  [[ -d "$PG_DATA" ]] || die "PostgreSQL data directory is not initialized: $PG_DATA"
+
+  mkdir -p "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
+
+  if [[ ! -d "$PG_PROBACKUP_BACKUP_DIR/backups" ]]; then
+    su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY init -B '$PG_PROBACKUP_BACKUP_DIR'"
+  fi
+  if [[ ! -f "$PG_PROBACKUP_BACKUP_DIR/backups/${PG_PROBACKUP_INSTANCE}/pg_probackup.conf" ]]; then
+    su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY add-instance -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' -D '$PG_DATA'"
+  fi
+  su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY set-config -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE' --retention-redundancy='$PG_PROBACKUP_RETENTION_REDUNDANCY' --retention-window='$PG_PROBACKUP_RETENTION_WINDOW'"
+  su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY show -B '$PG_PROBACKUP_BACKUP_DIR' --instance '$PG_PROBACKUP_INSTANCE'"
 }
 
 write_systemd() {
@@ -752,7 +766,16 @@ main() {
     configure_profile
   fi
   start_services
+  if is_true "$IS_POSTGRESQL_NODE" && [[ "${SKIP_SERVICE_START:-0}" != "1" ]]; then
+    initialize_pg_probackup_instance
+  fi
   log "node $MY_NAME ($MY_IP) installed"
 }
+
+if [[ "${1:-}" == "--init-pg-probackup" ]]; then
+  is_true "$IS_POSTGRESQL_NODE" || die "current node $MY_IP has no PostgreSQL role"
+  initialize_pg_probackup_instance
+  exit 0
+fi
 
 main "$@"
