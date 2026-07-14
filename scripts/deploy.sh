@@ -16,6 +16,7 @@ require_database_passwords
 ssh_base=(ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
 scp_base=(scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
 if [[ -n "${SSH_KEY:-}" ]]; then
+  [[ -r "$SSH_KEY" ]] || die "configured SSH private key is not readable: $SSH_KEY"
   ssh_base+=(-i "$SSH_KEY")
   scp_base+=(-i "$SSH_KEY")
 fi
@@ -27,6 +28,12 @@ if [[ -n "${SSH_PASSWORD:-}" && -z "${SSH_KEY:-}" ]]; then
   fi
   ssh_base=(sshpass -p "$SSH_PASSWORD" "${ssh_base[@]}")
   scp_base=(sshpass -p "$SSH_PASSWORD" "${scp_base[@]}")
+else
+  # Key-based/default SSH authentication is the preferred path and does not
+  # need sshpass. BatchMode prevents an unattended deployment from hanging on
+  # an interactive password prompt when key authentication is not ready.
+  ssh_base+=(-o BatchMode=yes)
+  scp_base+=(-o BatchMode=yes)
 fi
 
 run_remote() {

@@ -583,17 +583,18 @@ rpm_repo_install() {
   local manager="$1"
   shift
   [[ "$#" -gt 0 ]] || die "${manager} install requested with no packages"
-  local -a repo_opts=()
+  local -a install_cmd=("$manager")
+  local -a disabled_repos=()
   local disabled_repo
   if [[ -n "${YUM_DISABLE_REPOS:-}" ]]; then
-    IFS=',' read -ra repo_opts <<< "$YUM_DISABLE_REPOS"
-    for disabled_repo in "${!repo_opts[@]}"; do
-      repo_opts[$disabled_repo]="--disablerepo=$(trim "${repo_opts[$disabled_repo]}")"
+    IFS=',' read -ra disabled_repos <<< "$YUM_DISABLE_REPOS"
+    for disabled_repo in "${!disabled_repos[@]}"; do
+      install_cmd+=("--disablerepo=$(trim "${disabled_repos[$disabled_repo]}")")
     done
   fi
   yum_source_args
-  if [[ "${YUM_SOURCE_ARGS+x}" == "x" ]]; then
-    repo_opts+=("${YUM_SOURCE_ARGS[@]}")
+  if [[ -n "${YUM_SOURCE:-}" ]]; then
+    install_cmd+=("${YUM_SOURCE_ARGS[@]}")
   fi
   local rpm_dir=""
 
@@ -629,14 +630,14 @@ EOF
   fi
 
   log "using ${manager} online repositories to install packages: $*"
-  if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
+  if "${install_cmd[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
     return 0
   fi
 
   log "${manager} online install failed; cleaning metadata and retrying once"
   "$manager" clean all || true
-  "$manager" "${repo_opts[@]}" makecache -y || true
-  if "$manager" "${repo_opts[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
+  "${install_cmd[@]}" makecache -y || true
+  if "${install_cmd[@]}" install -y --setopt=timeout=60 --setopt=retries=5 "$@"; then
     return 0
   fi
 
@@ -669,7 +670,6 @@ iproute
 iputils
 cronie
 openssh-clients
-sshpass
 EOF
   case "$compat" in
     el7)
