@@ -632,15 +632,29 @@ INCREMENTAL_MODE=${PG_PROBACKUP_INCREMENTAL_MODE}
 REQUESTED_MODE="\${1:-}"
 BACKUP_USER=${PG_PROBACKUP_BACKUP_USER}
 PG_PROBACKUP_BIN=${PG_PROBACKUP_BINARY}
+BACKUP_HOST=${PG_PROBACKUP_BACKUP_HOST}
+MEMBER_NAME=${MY_POSTGRESQL_NAME}
 
 mkdir -p "\$LOG_DIR"
 exec >>"\$LOG_DIR/pg_probackup-\$(date +%F).log" 2>&1
 
 echo "[\$(date '+%F %T')] pg_probackup job start on \$(hostname)"
-if ! ${PATRONICTL_BIN} -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="${MY_POSTGRESQL_NAME}" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
-  echo "[\$(date '+%F %T')] current node is not Patroni leader, skip backup"
-  exit 0
+IS_LEADER=false
+if ${PATRONICTL_BIN} -c ${PATRONI_HOME}/patroni.yml list 2>/dev/null | awk -v name="\$MEMBER_NAME" '\$1 == "|" && \$2 == name && \$6 == "Leader" {found=1} END {exit found ? 0 : 1}'; then
+  IS_LEADER=true
 fi
+case "\$BACKUP_HOST" in
+  full) ;;
+  leader)
+    [[ "\$IS_LEADER" == "true" ]] || { echo "[\$(date '+%F %T')] current node is not Patroni leader, skip backup"; exit 0; }
+    ;;
+  standby)
+    [[ "\$IS_LEADER" != "true" ]] || { echo "[\$(date '+%F %T')] current node is Patroni leader, skip standby backup"; exit 0; }
+    ;;
+  *)
+    [[ "\$BACKUP_HOST" == "\$MEMBER_NAME" ]] || { echo "[\$(date '+%F %T')] current node is not selected backup node \$BACKUP_HOST, skip backup"; exit 0; }
+    ;;
+esac
 
 if [[ "\$REQUESTED_MODE" == "FULL" ]]; then
   BACKUP_MODE=FULL
@@ -666,10 +680,16 @@ EOF
   local current_crontab backup_cron_line
   backup_cron_line="${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${PG_PROBACKUP_JOB_SCRIPT}"
   current_crontab="$(crontab -u "$POSTGRES_OS_USER" -l 2>/dev/null | grep -Fv "$PG_PROBACKUP_JOB_SCRIPT" || true)"
-  {
-    [[ -z "$current_crontab" ]] || printf '%s\n' "$current_crontab"
-    printf '%s\n' "$backup_cron_line"
-  } | crontab -u "$POSTGRES_OS_USER" -
+  if pg_probackup_cron_enabled_for_node "$MY_POSTGRESQL_NAME"; then
+    {
+      [[ -z "$current_crontab" ]] || printf '%s\n' "$current_crontab"
+      printf '%s\n' "$backup_cron_line"
+    } | crontab -u "$POSTGRES_OS_USER" -
+  elif [[ -n "$current_crontab" ]]; then
+    printf '%s\n' "$current_crontab" | crontab -u "$POSTGRES_OS_USER" -
+  else
+    crontab -u "$POSTGRES_OS_USER" -r 2>/dev/null || true
+  fi
   rm -f /etc/cron.d/pg-probackup-ha
   systemctl enable --now crond >/dev/null 2>&1 || true
 }

@@ -206,6 +206,7 @@ map_config_aliases() {
   PGCONF_UNIX_SOCKET_DIRECTORIES="${POSTGRESQL_CONF_UNIX_SOCKET_DIRECTORIES:-/var/run/postgresql}"
 
   PG_PROBACKUP_VERSION="${PG_PROBACKUP_VERSION:-2.5.16}"
+  PG_PROBACKUP_BACKUP_HOST="${PG_PROBACKUP_BACKUP_HOST:-full}"
   PG_PROBACKUP_BACKUP_DIR="${PG_PROBACKUP_BACKUP_DIR:-/pgbak/pg_probackup}"
   PG_PROBACKUP_INSTANCE="${PG_PROBACKUP_INSTANCE:-${SCOPE}}"
   PG_PROBACKUP_BINARY="${PG_PROBACKUP_BINARY:-/usr/local/bin/pg_probackup}"
@@ -253,6 +254,31 @@ map_config_aliases() {
   csv_to_array PG_NODES "${POSTGRESQL_NODES:-pg01:10.0.0.121,pg02:10.0.0.122,pg03:10.0.0.123}"
   csv_to_array ETCD_NODES "${ETCD_NODES:-${POSTGRESQL_NODES:-pg01:10.0.0.121,pg02:10.0.0.122,pg03:10.0.0.123}}"
   CLUSTER_NODES=("${PG_NODES[@]}")
+  validate_pg_probackup_backup_host
+}
+
+validate_pg_probackup_backup_host() {
+  local item node_name
+  case "$PG_PROBACKUP_BACKUP_HOST" in
+    full|leader) return 0 ;;
+    standby)
+      [[ "${#PG_NODES[@]}" -gt 1 ]] || die "config [pg_probackup] backup_host=standby requires at least two PostgreSQL nodes"
+      return 0
+      ;;
+  esac
+  for item in "${PG_NODES[@]}"; do
+    node_name="${item%%:*}"
+    [[ "$PG_PROBACKUP_BACKUP_HOST" == "$node_name" ]] && return 0
+  done
+  die "invalid [pg_probackup] backup_host='$PG_PROBACKUP_BACKUP_HOST'; allowed values: full, leader, standby, or a node name from [postgresql].nodes"
+}
+
+pg_probackup_cron_enabled_for_node() {
+  local node_name="$1"
+  case "$PG_PROBACKUP_BACKUP_HOST" in
+    full|leader|standby) return 0 ;;
+    *) [[ "$PG_PROBACKUP_BACKUP_HOST" == "$node_name" ]] ;;
+  esac
 }
 
 node_has_role() {

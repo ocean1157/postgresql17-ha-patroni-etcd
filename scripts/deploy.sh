@@ -163,7 +163,9 @@ exit \"\$failed\""
 }
 
 verify_patroni_install_node() {
-  local ip="$1"
+  local ip="$1" node_name cron_expected=false
+  node_name="$(node_name_by_ip_role "$ip" postgresql)"
+  pg_probackup_cron_enabled_for_node "$node_name" && cron_expected=true
   log "verify PostgreSQL/Patroni install files on $ip"
   run_remote_retry "$ip" "failed=0
 check_path() {
@@ -190,10 +192,12 @@ check_path x '$PG_PREFIX/bin/pg_config'
 check_path x '$PG_PROBACKUP_BINARY'
 check_path x '$PG_PROBACKUP_JOB_SCRIPT'
 check_path f /etc/systemd/system/patroni.service
-if crontab -u '$POSTGRES_OS_USER' -l 2>/dev/null | grep -Fq '$PG_PROBACKUP_JOB_SCRIPT'; then
+if [[ '$cron_expected' == 'true' ]] && crontab -u '$POSTGRES_OS_USER' -l 2>/dev/null | grep -Fq '$PG_PROBACKUP_JOB_SCRIPT'; then
   echo 'OK postgres crontab $PG_PROBACKUP_JOB_SCRIPT'
+elif [[ '$cron_expected' != 'true' ]] && ! crontab -u '$POSTGRES_OS_USER' -l 2>/dev/null | grep -Fq '$PG_PROBACKUP_JOB_SCRIPT'; then
+  echo 'OK postgres crontab is disabled by backup_host=$PG_PROBACKUP_BACKUP_HOST'
 else
-  echo 'MISSING postgres crontab $PG_PROBACKUP_JOB_SCRIPT'
+  echo 'INVALID postgres crontab for backup_host=$PG_PROBACKUP_BACKUP_HOST'
   failed=1
 fi
 exit \"\$failed\""
