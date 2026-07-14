@@ -189,6 +189,8 @@ check_path x '$PATRONI_BIN'
 check_path x '$PATRONICTL_BIN'
 check_path x '$PG_PREFIX/bin/postgres'
 check_path x '$PG_PREFIX/bin/pg_config'
+check_path x '$PG_PREFIX/bin/pg_repack'
+check_path f '$PG_PREFIX/share/extension/pg_repack.control'
 check_path x '$PG_PROBACKUP_BINARY'
 check_path x '$PG_PROBACKUP_JOB_SCRIPT'
 check_path f /etc/systemd/system/patroni.service
@@ -204,13 +206,14 @@ exit \"\$failed\""
 }
 
 create_database_extensions() {
-  log "初始化 PostgreSQL 扩展 pg_cron 和 pg_stat_statements"
+  log "初始化 PostgreSQL 扩展 pg_cron、pg_repack 和 pg_stat_statements"
   run_remote_retry "$(primary_ip)" "leader_ip=\$('$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
     test -n \"\$leader_ip\"; \
     PGPASSWORD='$POSTGRES_SUPERPASS' '$PG_PREFIX/bin/psql' -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U '$POSTGRES_SUPERUSER' -d '$PGCONF_CRON_DATABASE_NAME' -v ON_ERROR_STOP=1 \
       -c 'CREATE EXTENSION IF NOT EXISTS pg_cron;' \
+      -c 'CREATE EXTENSION IF NOT EXISTS pg_repack;' \
       -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;' \
-      -c \"SELECT extname, extversion FROM pg_extension WHERE extname IN ('pg_cron','pg_stat_statements') ORDER BY extname;\""
+      -c \"SELECT extname, extversion FROM pg_extension WHERE extname IN ('pg_cron','pg_repack','pg_stat_statements') ORDER BY extname;\""
 }
 
 initialize_pg_probackup_node() {

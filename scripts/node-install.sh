@@ -325,6 +325,30 @@ install_pg_cron() {
   )
 }
 
+install_pg_repack() {
+  if [[ -x "$PG_PREFIX/bin/pg_repack" && -f "$PG_PREFIX/share/extension/pg_repack.control" ]]; then
+    log "pg_repack already installed under $PG_PREFIX"
+    return 0
+  fi
+
+  local tgz="$PROJECT_DIR/packages/pg_repack-${PG_REPACK_VERSION}.tar.gz"
+  [[ -f "$tgz" ]] || die "missing $tgz; run scripts/download-package.sh first"
+  [[ -x "$PG_PREFIX/bin/pg_config" ]] || die "missing $PG_PREFIX/bin/pg_config; install PostgreSQL first"
+
+  log "build pg_repack $PG_REPACK_VERSION"
+  local build_dir="/tmp/pg_repack-${PG_REPACK_VERSION}-build"
+  rm -rf "$build_dir"
+  mkdir -p "$build_dir"
+  tar -xzf "$tgz" -C "$build_dir" --strip-components=1
+  (
+    cd "$build_dir"
+    run_with_heartbeat "pg_repack make" make PG_CONFIG="$PG_PREFIX/bin/pg_config"
+    run_with_heartbeat "pg_repack make install" make PG_CONFIG="$PG_PREFIX/bin/pg_config" install
+  )
+  [[ -x "$PG_PREFIX/bin/pg_repack" ]] || die "pg_repack installation did not produce $PG_PREFIX/bin/pg_repack"
+  [[ -f "$PG_PREFIX/share/extension/pg_repack.control" ]] || die "pg_repack installation did not produce its extension control file"
+}
+
 install_patroni() {
   cd "$PROJECT_DIR"
 
@@ -779,6 +803,7 @@ main() {
     write_postgres_env
     install_postgres
     install_pg_cron
+    install_pg_repack
     install_pg_probackup
     install_patroni
     write_vip_callback

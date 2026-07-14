@@ -200,11 +200,12 @@ download_python() {
 }
 
 download_sources() {
-  log "[1/4] download PostgreSQL/etcd/pg_probackup/pg_cron packages into $PACKAGE_DIR"
+  log "[1/4] download PostgreSQL/etcd/pg_probackup/pg_cron/pg_repack packages into $PACKAGE_DIR"
   download "https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.gz" "$PACKAGE_DIR/postgresql-${POSTGRES_VERSION}.tar.gz"
   download "https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz" "$PACKAGE_DIR/etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz"
   download "https://github.com/postgrespro/pg_probackup/archive/refs/tags/${PG_PROBACKUP_VERSION}.tar.gz" "$PACKAGE_DIR/pg_probackup-${PG_PROBACKUP_VERSION}.tar.gz"
   download "https://github.com/citusdata/pg_cron/archive/refs/tags/v${PG_CRON_VERSION}.tar.gz" "$PACKAGE_DIR/pg_cron-${PG_CRON_VERSION}.tar.gz"
+  download "https://github.com/reorg/pg_repack/archive/refs/tags/ver_${PG_REPACK_VERSION}.tar.gz" "$PACKAGE_DIR/pg_repack-${PG_REPACK_VERSION}.tar.gz"
 }
 
 write_environment_manifest() {
