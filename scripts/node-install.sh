@@ -38,7 +38,7 @@ run_with_heartbeat() {
 }
 
 install_prereqs() {
-  log "install system dependencies from online package repositories"
+  log "install system dependencies according to repository mode"
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
     local pkg
     local -a prereq_pkgs missing_pkgs=()
@@ -171,6 +171,7 @@ export PGDATABASE=${PGDATABASE}
 export PGUSER=${POSTGRES_SUPERUSER}
 export PGHOST=/var/run/postgresql
 export PATRONI_CONFIG=${PATRONI_HOME}/patroni.yml
+export PATRONICTL_CONFIG_FILE=${PATRONI_HOME}/patroni.yml
 export ETCDCTL_ENDPOINTS=$(etcd_client_endpoints)
 export PG_PROBACKUP=${PG_PROBACKUP_BINARY}
 export PG_PROBACKUP_BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
