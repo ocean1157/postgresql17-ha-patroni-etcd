@@ -8,6 +8,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "$PROJECT_DIR/scripts/lib.sh"
 load_config
+apply_hardware_parameter_defaults
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 
@@ -529,6 +530,9 @@ bootstrap:
         shared_buffers: ${PGCONF_SHARED_BUFFERS}
         effective_cache_size: ${PGCONF_EFFECTIVE_CACHE_SIZE}
         maintenance_work_mem: ${PGCONF_MAINTENANCE_WORK_MEM}
+        max_worker_processes: ${PGCONF_MAX_WORKER_PROCESSES}
+        max_parallel_workers: ${PGCONF_MAX_PARALLEL_WORKERS}
+        max_parallel_workers_per_gather: ${PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER}
         work_mem: ${PGCONF_WORK_MEM}
         wal_level: ${PGCONF_WAL_LEVEL}
         wal_log_hints: '${PGCONF_WAL_LOG_HINTS}'

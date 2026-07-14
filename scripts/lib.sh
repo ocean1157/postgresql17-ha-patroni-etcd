@@ -32,9 +32,79 @@ load_config() {
     section_key="$(config_name "$section" "$key")"
     printf -v "$section_key" '%s' "$value"
     export "$section_key"
+    printf -v "CONFIG_HAS_${section_key}" '%s' true
   done < "$CONFIG_FILE"
 
   map_config_aliases
+}
+
+apply_hardware_parameter_defaults() {
+  # deploy.sh calculates these values once on the deployment host and exports
+  # PG_HARDWARE_DEFAULTS_RESOLVED=true to every target node. This prevents each
+  # target from calculating a different Patroni global configuration.
+  [[ "${PG_HARDWARE_DEFAULTS_RESOLVED:-false}" != "true" ]] || return 0
+
+  local cpu mem_mb mem_gb shared_buffers effective_cache maintenance_mem
+  local max_connections max_parallel_workers max_parallel_gather missing=false
+  cpu="$(nproc)"
+  mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+  mem_gb=$((mem_mb / 1024))
+
+  shared_buffers=$((mem_gb * 25 / 100))
+  [[ "$shared_buffers" -ge 1 ]] || shared_buffers=1
+  effective_cache=$((mem_gb * 75 / 100))
+
+  max_connections=$((cpu * 3))
+
+  maintenance_mem=$((mem_gb * 2 / 100))
+  [[ "$maintenance_mem" -ge 1 ]] || maintenance_mem=1
+  [[ "$maintenance_mem" -le 8 ]] || maintenance_mem=8
+
+  max_parallel_workers=$((cpu / 2))
+  [[ "$max_parallel_workers" -ge 2 ]] || max_parallel_workers=2
+  max_parallel_gather=$((cpu / 8))
+  [[ "$max_parallel_gather" -ge 2 ]] || max_parallel_gather=2
+  [[ "$max_parallel_gather" -le 8 ]] || max_parallel_gather=8
+
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_SHARED_BUFFERS:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_SHARED_BUFFERS="${shared_buffers}GB"; missing=true
+  fi
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE="${effective_cache}GB"; missing=true
+  fi
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAX_CONNECTIONS:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_MAX_CONNECTIONS="$max_connections"; missing=true
+  fi
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAINTENANCE_WORK_MEM:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_MAINTENANCE_WORK_MEM="${maintenance_mem}GB"; missing=true
+  fi
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAX_WORKER_PROCESSES:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_MAX_WORKER_PROCESSES="$cpu"; missing=true
+  fi
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAX_PARALLEL_WORKERS:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_MAX_PARALLEL_WORKERS="$max_parallel_workers"; missing=true
+  fi
+  if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER:-false}" != "true" ]]; then
+    POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER="$max_parallel_gather"; missing=true
+  fi
+
+  export POSTGRESQL_CONF_SHARED_BUFFERS POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE
+  export POSTGRESQL_CONF_MAX_CONNECTIONS POSTGRESQL_CONF_MAINTENANCE_WORK_MEM
+  export POSTGRESQL_CONF_MAX_WORKER_PROCESSES POSTGRESQL_CONF_MAX_PARALLEL_WORKERS
+  export POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER
+  PGCONF_SHARED_BUFFERS="$POSTGRESQL_CONF_SHARED_BUFFERS"
+  PGCONF_EFFECTIVE_CACHE_SIZE="$POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE"
+  PGCONF_MAX_CONNECTIONS="$POSTGRESQL_CONF_MAX_CONNECTIONS"
+  PGCONF_MAINTENANCE_WORK_MEM="$POSTGRESQL_CONF_MAINTENANCE_WORK_MEM"
+  PGCONF_MAX_WORKER_PROCESSES="$POSTGRESQL_CONF_MAX_WORKER_PROCESSES"
+  PGCONF_MAX_PARALLEL_WORKERS="$POSTGRESQL_CONF_MAX_PARALLEL_WORKERS"
+  PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER="$POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER"
+  PG_HARDWARE_DEFAULTS_RESOLVED=true
+  export PG_HARDWARE_DEFAULTS_RESOLVED
+
+  if [[ "$missing" == "true" ]]; then
+    log "PostgreSQL missing parameters calculated once on deployment host: cpu=${cpu}, memory=${mem_gb}GB"
+  fi
 }
 
 trim() {
@@ -103,6 +173,9 @@ map_config_aliases() {
   PGCONF_SHARED_BUFFERS="${POSTGRESQL_CONF_SHARED_BUFFERS:-4GB}"
   PGCONF_EFFECTIVE_CACHE_SIZE="${POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE:-12GB}"
   PGCONF_MAINTENANCE_WORK_MEM="${POSTGRESQL_CONF_MAINTENANCE_WORK_MEM:-512MB}"
+  PGCONF_MAX_WORKER_PROCESSES="${POSTGRESQL_CONF_MAX_WORKER_PROCESSES:-$(nproc)}"
+  PGCONF_MAX_PARALLEL_WORKERS="${POSTGRESQL_CONF_MAX_PARALLEL_WORKERS:-2}"
+  PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER="${POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER:-2}"
   PGCONF_WORK_MEM="${POSTGRESQL_CONF_WORK_MEM:-16MB}"
   PGCONF_WAL_LEVEL="${POSTGRESQL_CONF_WAL_LEVEL:-replica}"
   PGCONF_WAL_LOG_HINTS="${POSTGRESQL_CONF_WAL_LOG_HINTS:-on}"

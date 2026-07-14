@@ -8,6 +8,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "$PROJECT_DIR/scripts/lib.sh"
 load_config
+apply_hardware_parameter_defaults
 LOCAL_IP="$(current_ip)"
 require_database_passwords
 
@@ -85,7 +86,16 @@ install_node() {
   local ip="$1" remote_project_dir
   remote_project_dir="$(node_project_dir "$ip")"
   log "install node $ip"
-  run_remote_retry "$ip" "cd '$remote_project_dir' && SKIP_SERVICE_START=1 bash scripts/node-install.sh"
+  run_remote_retry "$ip" "cd '$remote_project_dir' && \
+    PG_HARDWARE_DEFAULTS_RESOLVED=true \
+    POSTGRESQL_CONF_SHARED_BUFFERS='$PGCONF_SHARED_BUFFERS' \
+    POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE='$PGCONF_EFFECTIVE_CACHE_SIZE' \
+    POSTGRESQL_CONF_MAX_CONNECTIONS='$PGCONF_MAX_CONNECTIONS' \
+    POSTGRESQL_CONF_MAINTENANCE_WORK_MEM='$PGCONF_MAINTENANCE_WORK_MEM' \
+    POSTGRESQL_CONF_MAX_WORKER_PROCESSES='$PGCONF_MAX_WORKER_PROCESSES' \
+    POSTGRESQL_CONF_MAX_PARALLEL_WORKERS='$PGCONF_MAX_PARALLEL_WORKERS' \
+    POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER='$PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER' \
+    SKIP_SERVICE_START=1 bash scripts/node-install.sh"
 }
 
 enable_etcd_unit() {
