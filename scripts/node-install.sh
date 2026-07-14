@@ -663,12 +663,14 @@ EOF
   chmod 0755 "$PG_PROBACKUP_JOB_SCRIPT"
   chown root:root "$PG_PROBACKUP_JOB_SCRIPT"
 
-  cat >/etc/cron.d/pg-probackup-ha <<EOF
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${POSTGRES_OS_USER} ${PG_PROBACKUP_JOB_SCRIPT}
-EOF
-  chmod 0644 /etc/cron.d/pg-probackup-ha
+  local current_crontab backup_cron_line
+  backup_cron_line="${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${PG_PROBACKUP_JOB_SCRIPT}"
+  current_crontab="$(crontab -u "$POSTGRES_OS_USER" -l 2>/dev/null | grep -Fv "$PG_PROBACKUP_JOB_SCRIPT" || true)"
+  {
+    [[ -z "$current_crontab" ]] || printf '%s\n' "$current_crontab"
+    printf '%s\n' "$backup_cron_line"
+  } | crontab -u "$POSTGRES_OS_USER" -
+  rm -f /etc/cron.d/pg-probackup-ha
   systemctl enable --now crond >/dev/null 2>&1 || true
 }
 

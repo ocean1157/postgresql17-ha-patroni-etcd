@@ -189,8 +189,13 @@ check_path x '$PG_PREFIX/bin/postgres'
 check_path x '$PG_PREFIX/bin/pg_config'
 check_path x '$PG_PROBACKUP_BINARY'
 check_path x '$PG_PROBACKUP_JOB_SCRIPT'
-check_path f /etc/cron.d/pg-probackup-ha
 check_path f /etc/systemd/system/patroni.service
+if crontab -u '$POSTGRES_OS_USER' -l 2>/dev/null | grep -Fq '$PG_PROBACKUP_JOB_SCRIPT'; then
+  echo 'OK postgres crontab $PG_PROBACKUP_JOB_SCRIPT'
+else
+  echo 'MISSING postgres crontab $PG_PROBACKUP_JOB_SCRIPT'
+  failed=1
+fi
 exit \"\$failed\""
 }
 
@@ -228,6 +233,13 @@ verify_initial_full_backup() {
   die "initial FULL pg_probackup backup was not found with status OK on any PostgreSQL node"
 }
 
+verify_max_connections_node() {
+  local ip="$1"
+  log "verify max_connections=$PGCONF_MAX_CONNECTIONS on $ip"
+  run_remote_retry "$ip" "actual=\$(su - '$POSTGRES_OS_USER' -c \"psql -XAt -c 'show max_connections'\"); \
+    test \"\$actual\" = '$PGCONF_MAX_CONNECTIONS' || { echo \"max_connections expected=$PGCONF_MAX_CONNECTIONS actual=\$actual\"; exit 1; }"
+}
+
 apply_patroni_runtime_config() {
   log "写入 Patroni 全局动态配置，确保硬件参数和预加载参数对首次部署及复跑生效"
   run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' edit-config --force \
@@ -247,6 +259,16 @@ apply_patroni_runtime_config() {
   run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' restart --force '$SCOPE'"
 
   log "wait for Patroni cluster after runtime config"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+
+  # When max_connections is reduced, replicas temporarily keep the higher
+  # value recorded in pg_controldata. Checkpoint the leader, then restart only
+  # members that Patroni marks pending so the lower value can converge safely.
+  run_remote_retry "$(primary_ip)" "leader_ip=\$('$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
+    test -n \"\$leader_ip\"; \
+    PGPASSWORD='$POSTGRES_SUPERPASS' '$PG_PREFIX/bin/psql' -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U '$POSTGRES_SUPERUSER' -d '$PGDATABASE' -v ON_ERROR_STOP=1 -c 'CHECKPOINT;'"
+  sleep 5
+  run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' restart --force --pending '$SCOPE' || true"
   run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 }
 
@@ -332,6 +354,7 @@ main() {
   run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   apply_patroni_runtime_config
+  run_parallel_phase "验证 max_connections" verify_max_connections_node "${pg_ips[@]}"
   run_parallel_phase "初始化 pg_probackup 实例" initialize_pg_probackup_node "${pg_ips[@]}"
   create_database_extensions
   run_parallel_phase "执行首次 pg_probackup 全量备份" run_initial_full_backup_node "${pg_ips[@]}"

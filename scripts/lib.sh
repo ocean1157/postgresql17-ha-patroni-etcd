@@ -45,7 +45,7 @@ apply_hardware_parameter_defaults() {
   [[ "${PG_HARDWARE_DEFAULTS_RESOLVED:-false}" != "true" ]] || return 0
 
   local cpu mem_mb mem_gb shared_buffers effective_cache maintenance_mem
-  local max_connections max_parallel_workers max_parallel_gather missing=false
+  local max_connections max_worker_processes max_parallel_workers max_parallel_gather missing=false
   cpu="$(nproc)"
   mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
   mem_gb=$((mem_mb / 1024))
@@ -55,11 +55,17 @@ apply_hardware_parameter_defaults() {
   effective_cache=$((mem_gb * 75 / 100))
 
   max_connections=$((cpu * 3))
+  # Patroni 3.x validates max_connections with a minimum of 25. Values below
+  # 25 are rejected and Patroni falls back to its default (100).
+  [[ "$max_connections" -ge 25 ]] || max_connections=25
 
   maintenance_mem=$((mem_gb * 2 / 100))
   [[ "$maintenance_mem" -ge 1 ]] || maintenance_mem=1
   [[ "$maintenance_mem" -le 8 ]] || maintenance_mem=8
 
+  max_worker_processes="$cpu"
+  # Patroni 3.0.4 validates max_worker_processes with a minimum of 2.
+  [[ "$max_worker_processes" -ge 2 ]] || max_worker_processes=2
   max_parallel_workers=$((cpu / 2))
   [[ "$max_parallel_workers" -ge 2 ]] || max_parallel_workers=2
   max_parallel_gather=$((cpu / 8))
@@ -79,7 +85,7 @@ apply_hardware_parameter_defaults() {
     POSTGRESQL_CONF_MAINTENANCE_WORK_MEM="${maintenance_mem}GB"; missing=true
   fi
   if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAX_WORKER_PROCESSES:-false}" != "true" ]]; then
-    POSTGRESQL_CONF_MAX_WORKER_PROCESSES="$cpu"; missing=true
+    POSTGRESQL_CONF_MAX_WORKER_PROCESSES="$max_worker_processes"; missing=true
   fi
   if [[ "${CONFIG_HAS_POSTGRESQL_CONF_MAX_PARALLEL_WORKERS:-false}" != "true" ]]; then
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS="$max_parallel_workers"; missing=true
