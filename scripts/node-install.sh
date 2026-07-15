@@ -182,7 +182,7 @@ prepare_pgdata_parent() {
   fi
   if ! sudo -u "$POSTGRES_OS_USER" test -w "$parent" || ! sudo -u "$POSTGRES_OS_USER" test -x "$parent"; then
     if [[ "$parent" == "/" || "$parent_parent" == "/" ]]; then
-      die "config [postgresql.install].data_dir='$PG_DATA' has top-level parent '$parent', which is not writable by $POSTGRES_OS_USER; refusing to change permissions on '$parent'. Use a dedicated parent such as '/data/pg/pgdata', or explicitly authorize '$parent' before deployment"
+      die "config [postgresql.install].data_dir='$PG_DATA' has top-level parent '$parent', which is not writable by $POSTGRES_OS_USER; refusing to change permissions on '$parent'. Use a dedicated parent such as '/data/postgres/pgdata', or explicitly authorize '$parent' before deployment"
     fi
     command -v setfacl >/dev/null 2>&1 || die "setfacl is required to grant $POSTGRES_OS_USER access to PostgreSQL data parent '$parent'"
     log "grant $POSTGRES_OS_USER rwx ACL on PostgreSQL data parent $parent"
