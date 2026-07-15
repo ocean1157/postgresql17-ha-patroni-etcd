@@ -178,7 +178,6 @@ download_python() {
   mkdir -p "$PYTHON_DIR"
   log "download pip packages into $PYTHON_DIR"
   pip_source_args
-  if [[ -n "${PIP_SOURCE:-}" ]]; then
   if [[ -n "$PIP_SOURCE" ]]; then
     source_args=("${PIP_SOURCE_ARGS[@]}")
     log "upgrade local pip tooling on this preparation host"

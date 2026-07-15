@@ -16,7 +16,7 @@ require_database_passwords
 
 ssh_base=(ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
 scp_base=(scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
-if [[ -n "${SSH_KEY:-}" ]]; then
+if [[ -n "$SSH_KEY" ]]; then
   [[ -r "$SSH_KEY" ]] || die "configured SSH private key is not readable: $SSH_KEY"
   ssh_base+=(-i "$SSH_KEY")
   scp_base+=(-i "$SSH_KEY")
