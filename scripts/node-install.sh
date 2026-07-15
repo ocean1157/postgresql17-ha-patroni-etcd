@@ -83,7 +83,7 @@ install_prereqs() {
 configure_os() {
   log "configure operating system baseline"
 
-  if [[ -n "${OS_TIMEZONE:-}" ]] && command -v timedatectl >/dev/null 2>&1; then
+  if [[ -n "$OS_TIMEZONE" ]] && command -v timedatectl >/dev/null 2>&1; then
     timedatectl set-timezone "$OS_TIMEZONE" || true
   fi
 
@@ -144,7 +144,7 @@ ${POSTGRES_OS_USER} hard memlock unlimited
 EOF
   fi
 
-  if is_true "$OS_MANAGE_SELINUX" && command -v getenforce >/dev/null 2>&1; then
+  if [[ "${OS_MANAGE_SELINUX,,}" == "permissive" ]] && command -v getenforce >/dev/null 2>&1; then
     setenforce 0 >/dev/null 2>&1 || true
     if [[ -f /etc/selinux/config ]]; then
       sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
@@ -369,7 +369,7 @@ install_patroni() {
   pip_install_virtualenv_online() {
     local -a virtualenv_args=(install --upgrade --user)
     pip_source_args
-    if [[ -n "${PIP_SOURCE:-}" ]]; then
+    if [[ -n "$PIP_SOURCE" ]]; then
       virtualenv_args+=("${PIP_SOURCE_ARGS[@]}")
     fi
     virtualenv_args+=(virtualenv)
@@ -401,7 +401,7 @@ install_patroni() {
   patroni_pip_install_online() {
     local -a pip_args=(--retries 10 --timeout 120)
     pip_source_args
-    if [[ -n "${PIP_SOURCE:-}" ]]; then
+    if [[ -n "$PIP_SOURCE" ]]; then
       pip_args+=("${PIP_SOURCE_ARGS[@]}")
     fi
     run_with_heartbeat "Patroni venv pip bootstrap online" env PIP_DEFAULT_TIMEOUT=120 "$PATRONI_VENV/bin/pip" install --upgrade "${pip_args[@]}" "pip<22" setuptools wheel
@@ -518,10 +518,10 @@ write_patroni_config() {
   local etcd_hosts
   etcd_hosts="$(etcd_hosts_yaml)"
   local tag_nofailover tag_noloadbalance tag_clonefrom tag_nosync
-  tag_nofailover="$(node_tag_value "$MY_POSTGRESQL_NAME" nofailover false)"
-  tag_noloadbalance="$(node_tag_value "$MY_POSTGRESQL_NAME" noloadbalance false)"
-  tag_clonefrom="$(node_tag_value "$MY_POSTGRESQL_NAME" clonefrom false)"
-  tag_nosync="$(node_tag_value "$MY_POSTGRESQL_NAME" nosync false)"
+  tag_nofailover="$(node_tag_value "$MY_POSTGRESQL_NAME" nofailover)"
+  tag_noloadbalance="$(node_tag_value "$MY_POSTGRESQL_NAME" noloadbalance)"
+  tag_clonefrom="$(node_tag_value "$MY_POSTGRESQL_NAME" clonefrom)"
+  tag_nosync="$(node_tag_value "$MY_POSTGRESQL_NAME" nosync)"
   cat >"$PATRONI_HOME/patroni.yml" <<EOF
 scope: ${SCOPE}
 namespace: /service/

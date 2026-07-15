@@ -22,7 +22,7 @@ if [[ -n "${SSH_KEY:-}" ]]; then
   scp_base+=(-i "$SSH_KEY")
 fi
 
-if [[ -n "${SSH_PASSWORD:-}" && -z "${SSH_KEY:-}" ]]; then
+if [[ -n "$SSH_PASSWORD" && -z "$SSH_KEY" ]]; then
   if ! command -v sshpass >/dev/null 2>&1; then
     log "sshpass 未安装，使用 yum/dnf 安装以支持密码方式分发项目"
     pkg_install sshpass
@@ -282,7 +282,7 @@ apply_patroni_runtime_config() {
 parallel_limit() {
   local node_count configured
   node_count="$(all_node_ips | wc -l | tr -d ' ')"
-  configured="${DEPLOY_PARALLEL_JOBS:-0}"
+  configured="$DEPLOY_PARALLEL_JOBS"
   if [[ "$configured" =~ ^[0-9]+$ ]] && [[ "$configured" -gt 0 ]]; then
     if [[ "$configured" -gt "$node_count" ]]; then
       printf '%s\n' "$node_count"

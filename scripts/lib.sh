@@ -15,6 +15,8 @@ die() {
 
 load_config() {
   local section="" line key value var section_key
+  [[ -f "$CONFIG_FILE" ]] || die "config file not found: $CONFIG_FILE"
+
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
     line="${line//$'\r'/}"
@@ -35,7 +37,131 @@ load_config() {
     printf -v "CONFIG_HAS_${section_key}" '%s' true
   done < "$CONFIG_FILE"
 
+  validate_required_config
   map_config_aliases
+}
+
+require_config_key() {
+  local var_name="$1" config_key="${2:-$1}"
+  local marker="CONFIG_HAS_${var_name}"
+
+  [[ "${!marker:-false}" == "true" ]] || die "required config $config_key is missing in $CONFIG_FILE"
+}
+
+require_config_value() {
+  local var_name="$1" config_key="$2"
+
+  require_config_key "$var_name" "$config_key"
+  [[ -n "$(trim "${!var_name:-}")" ]] || die "required config $config_key must not be empty in $CONFIG_FILE"
+}
+
+validate_required_config() {
+  local var marker
+  require_config_value ETCD_NODES "[etcd].nodes"
+  require_config_value POSTGRESQL_NODES "[postgresql].nodes"
+
+  local -a required_values=(
+    CLUSTER_NAME CLUSTER_SCOPE
+    DEPLOY_INSTALL_ROOT DEPLOY_SSH_USER DEPLOY_SSH_PORT DEPLOY_PARALLEL_JOBS
+    OS_TIMEZONE OS_ENABLE_CHRONY OS_DISABLE_TRANSPARENT_HUGEPAGE OS_APPLY_SYSCTL
+    OS_APPLY_LIMITS OS_OPEN_FIREWALL_PORTS OS_MANAGE_SELINUX
+    REPOSITORY_OFFLINE_INSTALL
+    ETCD_VERSION ETCD_CLIENT_PORT ETCD_PEER_PORT ETCD_DATA_DIR
+    ETCD_CONFIG_FILE ETCD_BIN_DIR
+    POSTGRESQL_VERSION POSTGRESQL_PORT POSTGRESQL_OS_USER POSTGRESQL_DATABASE
+    POSTGRESQL_INSTALL_PREFIX POSTGRESQL_INSTALL_DATA_DIR POSTGRESQL_INSTALL_CONFIGURE_OPTIONS
+    POSTGRESQL_AUTH_SUPERUSER POSTGRESQL_AUTH_SUPERPASS
+    POSTGRESQL_AUTH_REPLICATION_USER POSTGRESQL_AUTH_REPLICATION_PASS
+    POSTGRESQL_AUTH_REWIND_USER POSTGRESQL_AUTH_REWIND_PASS
+    POSTGRESQL_CONF_LISTEN_ADDRESSES POSTGRESQL_CONF_WORK_MEM POSTGRESQL_CONF_WAL_LEVEL
+    POSTGRESQL_CONF_WAL_LOG_HINTS POSTGRESQL_CONF_MAX_WAL_SENDERS
+    POSTGRESQL_CONF_MAX_REPLICATION_SLOTS POSTGRESQL_CONF_WAL_KEEP_SIZE
+    POSTGRESQL_CONF_MAX_WAL_SIZE POSTGRESQL_CONF_CHECKPOINT_COMPLETION_TARGET
+    POSTGRESQL_CONF_HOT_STANDBY POSTGRESQL_CONF_HOT_STANDBY_FEEDBACK
+    POSTGRESQL_CONF_PASSWORD_ENCRYPTION POSTGRESQL_CONF_SHARED_PRELOAD_LIBRARIES
+    POSTGRESQL_CONF_PG_STAT_STATEMENTS_MAX POSTGRESQL_CONF_PG_STAT_STATEMENTS_TRACK
+    POSTGRESQL_CONF_CRON_DATABASE_NAME POSTGRESQL_CONF_LOGGING_COLLECTOR
+    POSTGRESQL_CONF_LOG_DIRECTORY POSTGRESQL_CONF_LOG_FILENAME
+    POSTGRESQL_CONF_LOG_LINE_PREFIX POSTGRESQL_CONF_LOG_MIN_DURATION_STATEMENT
+    POSTGRESQL_CONF_ARCHIVE_MODE
+    PG_PROBACKUP_VERSION PG_PROBACKUP_BACKUP_HOST PG_PROBACKUP_BACKUP_DIR
+    PG_PROBACKUP_INSTANCE PG_PROBACKUP_BINARY PG_PROBACKUP_JOB_SCRIPT
+    PG_PROBACKUP_RETENTION_REDUNDANCY PG_PROBACKUP_RETENTION_WINDOW
+    PG_PROBACKUP_CRON_MINUTE PG_PROBACKUP_CRON_HOUR PG_PROBACKUP_FULL_BACKUP_DAY
+    PG_PROBACKUP_INCREMENTAL_MODE PG_PROBACKUP_BACKUP_USER
+    PG_CRON_VERSION PG_REPACK_VERSION
+    PATRONI_VERSION PATRONI_PORT PATRONI_HOME PATRONI_LOG_DIR PATRONI_VENV PATRONI_BIN_DIR
+    PATRONI_DCS_TTL PATRONI_DCS_LOOP_WAIT PATRONI_DCS_RETRY_TIMEOUT
+    PATRONI_DCS_MAXIMUM_LAG_ON_FAILOVER PATRONI_DCS_USE_PG_REWIND PATRONI_DCS_USE_SLOTS
+    PATRONI_SYNC_SYNCHRONOUS_MODE PATRONI_SYNC_SYNCHRONOUS_MODE_STRICT
+    PATRONI_SYNC_SYNCHRONOUS_NODE_COUNT VIP_LABEL
+  )
+  local -a required_keys=(
+    DEPLOY_SSH_PASSWORD DEPLOY_SSH_KEY REPOSITORY_YUM_SOURCE
+    REPOSITORY_YUM_DISABLE_REPOS REPOSITORY_PIP_SOURCE
+    VIP_ADDRESS VIP_CIDR VIP_DEVICE
+  )
+
+  for var in "${required_values[@]}"; do
+    require_config_value "$var" "$var"
+  done
+  for var in "${required_keys[@]}"; do
+    require_config_key "$var" "$var"
+  done
+  for var in POSTGRESQL_CONF_SHARED_BUFFERS POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE POSTGRESQL_CONF_MAX_CONNECTIONS POSTGRESQL_CONF_MAINTENANCE_WORK_MEM POSTGRESQL_CONF_MAX_WORKER_PROCESSES POSTGRESQL_CONF_MAX_PARALLEL_WORKERS POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER; do
+    marker="CONFIG_HAS_${var}"
+    if [[ "${!marker:-false}" == "true" ]]; then
+      require_config_value "$var" "$var"
+    fi
+  done
+
+  validate_config_values
+}
+
+validate_config_values() {
+  local value path
+
+  case "${REPOSITORY_OFFLINE_INSTALL,,}" in auto|true|false) ;; *) die "config [repository].offline_install must be auto, true, or false" ;; esac
+  case "${OS_MANAGE_SELINUX,,}" in false|permissive) ;; *) die "config [os].manage_selinux must be false or permissive" ;; esac
+  validate_port "$DEPLOY_SSH_PORT" "[deploy].ssh_port"
+  validate_port "$ETCD_CLIENT_PORT" "[etcd].client_port"
+  validate_port "$ETCD_PEER_PORT" "[etcd].peer_port"
+  validate_port "$POSTGRESQL_PORT" "[postgresql].port"
+  validate_port "$PATRONI_PORT" "[patroni].port"
+  [[ "$DEPLOY_PARALLEL_JOBS" =~ ^[0-9]+$ ]] || die "config [deploy].parallel_jobs must be a non-negative integer"
+  for value in "$OS_ENABLE_CHRONY" "$OS_DISABLE_TRANSPARENT_HUGEPAGE" "$OS_APPLY_SYSCTL" "$OS_APPLY_LIMITS" "$OS_OPEN_FIREWALL_PORTS" "$PATRONI_DCS_USE_PG_REWIND" "$PATRONI_DCS_USE_SLOTS" "$PATRONI_SYNC_SYNCHRONOUS_MODE" "$PATRONI_SYNC_SYNCHRONOUS_MODE_STRICT"; do
+    case "${value,,}" in true|false) ;; *) die "boolean config values must be true or false; got '$value'" ;; esac
+  done
+  if [[ -n "$VIP_ADDRESS" ]]; then
+    validate_ipv4 "$VIP_ADDRESS" "[vip].address"
+    [[ -n "$(trim "$VIP_CIDR")" ]] || die "config [vip].cidr is required when [vip].address is set"
+    [[ "$VIP_CIDR" =~ ^[0-9]+$ ]] && (( VIP_CIDR >= 0 && VIP_CIDR <= 32 )) || die "config [vip].cidr must be an integer from 0 to 32"
+    [[ -n "$(trim "$VIP_DEVICE")" ]] || die "config [vip].device is required when [vip].address is set"
+  fi
+  for path in "$DEPLOY_INSTALL_ROOT" "$ETCD_DATA_DIR" "$ETCD_CONFIG_FILE" "$ETCD_BIN_DIR" "$POSTGRESQL_INSTALL_PREFIX" "$POSTGRESQL_INSTALL_DATA_DIR" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_BINARY" "$PG_PROBACKUP_JOB_SCRIPT" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_VENV" "$PATRONI_BIN_DIR"; do
+    [[ "$path" == /* ]] || die "filesystem config paths must be absolute; got '$path'"
+  done
+  [[ "$PG_PROBACKUP_CRON_MINUTE" =~ ^[0-9]+$ ]] && (( 10#$PG_PROBACKUP_CRON_MINUTE <= 59 )) || die "config [pg_probackup].cron_minute must be an integer from 0 to 59"
+  [[ "$PG_PROBACKUP_CRON_HOUR" =~ ^[0-9]+$ ]] && (( 10#$PG_PROBACKUP_CRON_HOUR <= 23 )) || die "config [pg_probackup].cron_hour must be an integer from 0 to 23"
+  [[ "$PG_PROBACKUP_FULL_BACKUP_DAY" =~ ^[0-9]+$ ]] && (( 10#$PG_PROBACKUP_FULL_BACKUP_DAY <= 6 )) || die "config [pg_probackup].full_backup_day must be an integer from 0 to 6"
+  for value in "$PATRONI_DCS_TTL" "$PATRONI_DCS_LOOP_WAIT" "$PATRONI_DCS_RETRY_TIMEOUT" "$PATRONI_DCS_MAXIMUM_LAG_ON_FAILOVER" "$PATRONI_SYNC_SYNCHRONOUS_NODE_COUNT"; do
+    [[ "$value" =~ ^[0-9]+$ ]] || die "Patroni numeric config values must be non-negative integers; got '$value'"
+  done
+}
+
+validate_port() {
+  local port="$1" config_key="$2"
+  [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || die "config $config_key must be an integer from 1 to 65535"
+}
+
+validate_ipv4() {
+  local address="$1" config_key="$2" octet
+  local -a octets
+  [[ "$address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "config $config_key must be a valid IPv4 address; got '$address'"
+  IFS='.' read -ra octets <<< "$address"
+  for octet in "${octets[@]}"; do
+    (( 10#$octet >= 0 && 10#$octet <= 255 )) || die "config $config_key must be a valid IPv4 address; got '$address'"
+  done
 }
 
 apply_hardware_parameter_defaults() {
@@ -139,42 +265,32 @@ csv_to_array() {
 }
 
 map_config_aliases() {
-  CLUSTER_NAME="${CLUSTER_NAME:-${CLUSTER_NAME_NAME:-pg17-ha}}"
-  SCOPE="${CLUSTER_SCOPE:-${CLUSTER_NAME}}"
+  SCOPE="$CLUSTER_SCOPE"
 
-  INSTALL_ROOT="${DEPLOY_INSTALL_ROOT:-/opt/pg-ha-installer}"
-  SSH_USER="${DEPLOY_SSH_USER:-root}"
-  SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
-  SSH_KEY="${DEPLOY_SSH_KEY:-}"
-  SSH_PORT="${DEPLOY_SSH_PORT:-22}"
-  DEPLOY_PARALLEL_JOBS="${DEPLOY_PARALLEL_JOBS:-0}"
-  YUM_SOURCE="${REPOSITORY_YUM_SOURCE:-}"
-  YUM_DISABLE_REPOS="${REPOSITORY_YUM_DISABLE_REPOS:-${RPM_DISABLE_REPOS:-}}"
-  PIP_SOURCE="${REPOSITORY_PIP_SOURCE:-}"
-  OFFLINE_INSTALL="${REPOSITORY_OFFLINE_INSTALL:-auto}"
+  INSTALL_ROOT="$DEPLOY_INSTALL_ROOT"
+  SSH_USER="$DEPLOY_SSH_USER"
+  SSH_PASSWORD="$DEPLOY_SSH_PASSWORD"
+  SSH_KEY="$DEPLOY_SSH_KEY"
+  SSH_PORT="$DEPLOY_SSH_PORT"
+  YUM_SOURCE="$REPOSITORY_YUM_SOURCE"
+  YUM_DISABLE_REPOS="$REPOSITORY_YUM_DISABLE_REPOS"
+  PIP_SOURCE="$REPOSITORY_PIP_SOURCE"
+  OFFLINE_INSTALL="$REPOSITORY_OFFLINE_INSTALL"
 
-  OS_TIMEZONE="${OS_TIMEZONE:-Asia/Shanghai}"
-  OS_ENABLE_CHRONY="${OS_ENABLE_CHRONY:-true}"
-  OS_DISABLE_TRANSPARENT_HUGEPAGE="${OS_DISABLE_TRANSPARENT_HUGEPAGE:-true}"
-  OS_APPLY_SYSCTL="${OS_APPLY_SYSCTL:-true}"
-  OS_APPLY_LIMITS="${OS_APPLY_LIMITS:-true}"
-  OS_OPEN_FIREWALL_PORTS="${OS_OPEN_FIREWALL_PORTS:-true}"
-  OS_MANAGE_SELINUX="${OS_MANAGE_SELINUX:-false}"
-
-  POSTGRES_VERSION="${POSTGRESQL_VERSION:-17.10}"
-  POSTGRES_PORT="${POSTGRESQL_PORT:-5432}"
-  POSTGRES_OS_USER="${POSTGRESQL_OS_USER:-postgres}"
-  PGDATABASE="${POSTGRESQL_DATABASE:-postgres}"
-  PG_PREFIX="${POSTGRESQL_INSTALL_PREFIX:-${POSTGRESQL_PREFIX:-/pg/pghome}}"
-  PG_DATA="${POSTGRESQL_INSTALL_DATA_DIR:-${POSTGRESQL_DATA_DIR:-/pgdata/pg17}}"
-  PG_CONFIGURE_OPTIONS="${POSTGRESQL_INSTALL_CONFIGURE_OPTIONS:---with-openssl --with-zlib --with-uuid=e2fs --with-python}"
-  POSTGRES_SUPERUSER="${POSTGRESQL_AUTH_SUPERUSER:-${POSTGRESQL_SUPERUSER:-postgres}}"
-  POSTGRES_SUPERPASS="${POSTGRESQL_AUTH_SUPERPASS:-${POSTGRESQL_SUPERPASS:-}}"
-  REPLICATION_USER="${POSTGRESQL_AUTH_REPLICATION_USER:-${POSTGRESQL_REPLICATION_USER:-replicator}}"
-  REPLICATION_PASS="${POSTGRESQL_AUTH_REPLICATION_PASS:-${POSTGRESQL_REPLICATION_PASS:-}}"
-  REWIND_USER="${POSTGRESQL_AUTH_REWIND_USER:-${POSTGRESQL_REWIND_USER:-rewind}}"
-  REWIND_PASS="${POSTGRESQL_AUTH_REWIND_PASS:-${POSTGRESQL_REWIND_PASS:-}}"
-  PGCONF_LISTEN_ADDRESSES="${POSTGRESQL_CONF_LISTEN_ADDRESSES:-*}"
+  POSTGRES_VERSION="$POSTGRESQL_VERSION"
+  POSTGRES_PORT="$POSTGRESQL_PORT"
+  POSTGRES_OS_USER="$POSTGRESQL_OS_USER"
+  PGDATABASE="$POSTGRESQL_DATABASE"
+  PG_PREFIX="$POSTGRESQL_INSTALL_PREFIX"
+  PG_DATA="$POSTGRESQL_INSTALL_DATA_DIR"
+  PG_CONFIGURE_OPTIONS="$POSTGRESQL_INSTALL_CONFIGURE_OPTIONS"
+  POSTGRES_SUPERUSER="$POSTGRESQL_AUTH_SUPERUSER"
+  POSTGRES_SUPERPASS="$POSTGRESQL_AUTH_SUPERPASS"
+  REPLICATION_USER="$POSTGRESQL_AUTH_REPLICATION_USER"
+  REPLICATION_PASS="$POSTGRESQL_AUTH_REPLICATION_PASS"
+  REWIND_USER="$POSTGRESQL_AUTH_REWIND_USER"
+  REWIND_PASS="$POSTGRESQL_AUTH_REWIND_PASS"
+  PGCONF_LISTEN_ADDRESSES="$POSTGRESQL_CONF_LISTEN_ADDRESSES"
   PGCONF_MAX_CONNECTIONS="${POSTGRESQL_CONF_MAX_CONNECTIONS:-300}"
   PGCONF_SHARED_BUFFERS="${POSTGRESQL_CONF_SHARED_BUFFERS:-4GB}"
   PGCONF_EFFECTIVE_CACHE_SIZE="${POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE:-12GB}"
@@ -182,80 +298,89 @@ map_config_aliases() {
   PGCONF_MAX_WORKER_PROCESSES="${POSTGRESQL_CONF_MAX_WORKER_PROCESSES:-$(nproc)}"
   PGCONF_MAX_PARALLEL_WORKERS="${POSTGRESQL_CONF_MAX_PARALLEL_WORKERS:-2}"
   PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER="${POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER:-2}"
-  PGCONF_WORK_MEM="${POSTGRESQL_CONF_WORK_MEM:-16MB}"
-  PGCONF_WAL_LEVEL="${POSTGRESQL_CONF_WAL_LEVEL:-replica}"
-  PGCONF_WAL_LOG_HINTS="${POSTGRESQL_CONF_WAL_LOG_HINTS:-on}"
-  PGCONF_MAX_WAL_SENDERS="${POSTGRESQL_CONF_MAX_WAL_SENDERS:-10}"
-  PGCONF_MAX_REPLICATION_SLOTS="${POSTGRESQL_CONF_MAX_REPLICATION_SLOTS:-10}"
-  PGCONF_WAL_KEEP_SIZE="${POSTGRESQL_CONF_WAL_KEEP_SIZE:-2GB}"
-  PGCONF_MAX_WAL_SIZE="${POSTGRESQL_CONF_MAX_WAL_SIZE:-8GB}"
-  PGCONF_CHECKPOINT_COMPLETION_TARGET="${POSTGRESQL_CONF_CHECKPOINT_COMPLETION_TARGET:-0.9}"
-  PGCONF_HOT_STANDBY="${POSTGRESQL_CONF_HOT_STANDBY:-on}"
-  PGCONF_HOT_STANDBY_FEEDBACK="${POSTGRESQL_CONF_HOT_STANDBY_FEEDBACK:-on}"
-  PGCONF_PASSWORD_ENCRYPTION="${POSTGRESQL_CONF_PASSWORD_ENCRYPTION:-scram-sha-256}"
-  PGCONF_SHARED_PRELOAD_LIBRARIES="${POSTGRESQL_CONF_SHARED_PRELOAD_LIBRARIES:-pg_stat_statements}"
-  PGCONF_PG_STAT_STATEMENTS_MAX="${POSTGRESQL_CONF_PG_STAT_STATEMENTS_MAX:-10000}"
-  PGCONF_PG_STAT_STATEMENTS_TRACK="${POSTGRESQL_CONF_PG_STAT_STATEMENTS_TRACK:-all}"
-  PGCONF_CRON_DATABASE_NAME="${POSTGRESQL_CONF_CRON_DATABASE_NAME:-${PGDATABASE}}"
-  PGCONF_LOGGING_COLLECTOR="${POSTGRESQL_CONF_LOGGING_COLLECTOR:-on}"
-  PGCONF_LOG_DIRECTORY="${POSTGRESQL_CONF_LOG_DIRECTORY:-log}"
-  PGCONF_LOG_FILENAME="${POSTGRESQL_CONF_LOG_FILENAME:-postgresql-%Y-%m-%d.log}"
-  PGCONF_LOG_LINE_PREFIX="${POSTGRESQL_CONF_LOG_LINE_PREFIX:-%m [%p] %u@%d %r %a }"
-  PGCONF_LOG_MIN_DURATION_STATEMENT="${POSTGRESQL_CONF_LOG_MIN_DURATION_STATEMENT:-1000}"
-  PGCONF_ARCHIVE_MODE="${POSTGRESQL_CONF_ARCHIVE_MODE:-on}"
+  PGCONF_WORK_MEM="$POSTGRESQL_CONF_WORK_MEM"
+  PGCONF_WAL_LEVEL="$POSTGRESQL_CONF_WAL_LEVEL"
+  PGCONF_WAL_LOG_HINTS="$POSTGRESQL_CONF_WAL_LOG_HINTS"
+  PGCONF_MAX_WAL_SENDERS="$POSTGRESQL_CONF_MAX_WAL_SENDERS"
+  PGCONF_MAX_REPLICATION_SLOTS="$POSTGRESQL_CONF_MAX_REPLICATION_SLOTS"
+  PGCONF_WAL_KEEP_SIZE="$POSTGRESQL_CONF_WAL_KEEP_SIZE"
+  PGCONF_MAX_WAL_SIZE="$POSTGRESQL_CONF_MAX_WAL_SIZE"
+  PGCONF_CHECKPOINT_COMPLETION_TARGET="$POSTGRESQL_CONF_CHECKPOINT_COMPLETION_TARGET"
+  PGCONF_HOT_STANDBY="$POSTGRESQL_CONF_HOT_STANDBY"
+  PGCONF_HOT_STANDBY_FEEDBACK="$POSTGRESQL_CONF_HOT_STANDBY_FEEDBACK"
+  PGCONF_PASSWORD_ENCRYPTION="$POSTGRESQL_CONF_PASSWORD_ENCRYPTION"
+  PGCONF_SHARED_PRELOAD_LIBRARIES="$POSTGRESQL_CONF_SHARED_PRELOAD_LIBRARIES"
+  PGCONF_PG_STAT_STATEMENTS_MAX="$POSTGRESQL_CONF_PG_STAT_STATEMENTS_MAX"
+  PGCONF_PG_STAT_STATEMENTS_TRACK="$POSTGRESQL_CONF_PG_STAT_STATEMENTS_TRACK"
+  PGCONF_CRON_DATABASE_NAME="$POSTGRESQL_CONF_CRON_DATABASE_NAME"
+  PGCONF_LOGGING_COLLECTOR="$POSTGRESQL_CONF_LOGGING_COLLECTOR"
+  PGCONF_LOG_DIRECTORY="$POSTGRESQL_CONF_LOG_DIRECTORY"
+  PGCONF_LOG_FILENAME="$POSTGRESQL_CONF_LOG_FILENAME"
+  PGCONF_LOG_LINE_PREFIX="$POSTGRESQL_CONF_LOG_LINE_PREFIX"
+  PGCONF_LOG_MIN_DURATION_STATEMENT="$POSTGRESQL_CONF_LOG_MIN_DURATION_STATEMENT"
+  PGCONF_ARCHIVE_MODE="$POSTGRESQL_CONF_ARCHIVE_MODE"
   PGCONF_UNIX_SOCKET_DIRECTORIES="${POSTGRESQL_CONF_UNIX_SOCKET_DIRECTORIES:-/var/run/postgresql}"
 
-  PG_PROBACKUP_VERSION="${PG_PROBACKUP_VERSION:-2.5.16}"
-  PG_PROBACKUP_BACKUP_HOST="${PG_PROBACKUP_BACKUP_HOST:-full}"
-  PG_PROBACKUP_BACKUP_DIR="${PG_PROBACKUP_BACKUP_DIR:-/pgbak/pg_probackup}"
-  PG_PROBACKUP_INSTANCE="${PG_PROBACKUP_INSTANCE:-${SCOPE}}"
-  PG_PROBACKUP_BINARY="${PG_PROBACKUP_BINARY:-/usr/local/bin/pg_probackup}"
-  PG_PROBACKUP_JOB_SCRIPT="${PG_PROBACKUP_JOB_SCRIPT:-/usr/local/bin/pg_ha_probackup.sh}"
-  PG_PROBACKUP_RETENTION_REDUNDANCY="${PG_PROBACKUP_RETENTION_REDUNDANCY:-4}"
-  PG_PROBACKUP_RETENTION_WINDOW="${PG_PROBACKUP_RETENTION_WINDOW:-30}"
-  PG_PROBACKUP_CRON_MINUTE="${PG_PROBACKUP_CRON_MINUTE:-30}"
-  PG_PROBACKUP_CRON_HOUR="${PG_PROBACKUP_CRON_HOUR:-1}"
-  PG_PROBACKUP_FULL_BACKUP_DAY="${PG_PROBACKUP_FULL_BACKUP_DAY:-0}"
-  PG_PROBACKUP_INCREMENTAL_MODE="${PG_PROBACKUP_INCREMENTAL_MODE:-PAGE}"
-  PG_PROBACKUP_BACKUP_USER="${PG_PROBACKUP_BACKUP_USER:-${POSTGRES_SUPERUSER}}"
-  PGCONF_ARCHIVE_COMMAND="${POSTGRESQL_CONF_ARCHIVE_COMMAND:-${PG_PROBACKUP_BINARY} archive-push -B ${PG_PROBACKUP_BACKUP_DIR} --instance ${PG_PROBACKUP_INSTANCE} --wal-file-path=%p --wal-file-name=%f}"
-  PG_CRON_VERSION="${PG_CRON_VERSION:-1.6.7}"
-  PG_REPACK_VERSION="${PG_REPACK_VERSION:-1.5.3}"
+  PGCONF_ARCHIVE_COMMAND="$PG_PROBACKUP_BINARY archive-push -B $PG_PROBACKUP_BACKUP_DIR --instance $PG_PROBACKUP_INSTANCE --wal-file-path=%p --wal-file-name=%f"
 
-  ETCD_VERSION="${ETCD_VERSION:-v3.6.12}"
-  ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-2379}"
-  ETCD_PEER_PORT="${ETCD_PEER_PORT:-2380}"
-  ETCD_DATA="${ETCD_DATA_DIR:-/pg/etcd}"
-  ETCD_CONFIG_FILE="${ETCD_CONFIG_FILE:-/etc/etcd.conf.yml}"
-  ETCD_BIN_DIR="${ETCD_BIN_DIR:-/usr/local/bin}"
+  ETCD_DATA="$ETCD_DATA_DIR"
 
-  PATRONI_VERSION="${PATRONI_VERSION:-3.0.4}"
-  PATRONI_PORT="${PATRONI_PORT:-8008}"
-  PATRONI_HOME="${PATRONI_HOME:-/etc/patroni}"
-  PATRONI_LOG_DIR="${PATRONI_LOG_DIR:-/var/log/patroni}"
-  PATRONI_VENV="${PATRONI_VENV:-/opt/patroni-venv}"
-  PATRONI_BIN_DIR="${PATRONI_BIN_DIR:-/usr/local/bin}"
   PATRONI_BIN="${PATRONI_BIN_DIR}/patroni"
   PATRONICTL_BIN="${PATRONI_BIN_DIR}/patronictl"
-  PATRONI_TTL="${PATRONI_DCS_TTL:-30}"
-  PATRONI_LOOP_WAIT="${PATRONI_DCS_LOOP_WAIT:-10}"
-  PATRONI_RETRY_TIMEOUT="${PATRONI_DCS_RETRY_TIMEOUT:-10}"
-  PATRONI_MAXIMUM_LAG_ON_FAILOVER="${PATRONI_DCS_MAXIMUM_LAG_ON_FAILOVER:-1048576}"
-  PATRONI_USE_PG_REWIND="${PATRONI_DCS_USE_PG_REWIND:-true}"
-  PATRONI_USE_SLOTS="${PATRONI_DCS_USE_SLOTS:-true}"
-  SYNCHRONOUS_MODE="${PATRONI_SYNC_SYNCHRONOUS_MODE:-${POSTGRESQL_SYNCHRONOUS_MODE:-false}}"
-  SYNCHRONOUS_MODE_STRICT="${PATRONI_SYNC_SYNCHRONOUS_MODE_STRICT:-${POSTGRESQL_SYNCHRONOUS_MODE_STRICT:-false}}"
-  SYNCHRONOUS_NODE_COUNT="${PATRONI_SYNC_SYNCHRONOUS_NODE_COUNT:-1}"
+  PATRONI_TTL="$PATRONI_DCS_TTL"
+  PATRONI_LOOP_WAIT="$PATRONI_DCS_LOOP_WAIT"
+  PATRONI_RETRY_TIMEOUT="$PATRONI_DCS_RETRY_TIMEOUT"
+  PATRONI_MAXIMUM_LAG_ON_FAILOVER="$PATRONI_DCS_MAXIMUM_LAG_ON_FAILOVER"
+  PATRONI_USE_PG_REWIND="$PATRONI_DCS_USE_PG_REWIND"
+  PATRONI_USE_SLOTS="$PATRONI_DCS_USE_SLOTS"
+  SYNCHRONOUS_MODE="$PATRONI_SYNC_SYNCHRONOUS_MODE"
+  SYNCHRONOUS_MODE_STRICT="$PATRONI_SYNC_SYNCHRONOUS_MODE_STRICT"
+  SYNCHRONOUS_NODE_COUNT="$PATRONI_SYNC_SYNCHRONOUS_NODE_COUNT"
 
-  VIP_ADDRESS="${VIP_ADDRESS:-}"
-  VIP_CIDR="${VIP_CIDR:-24}"
-  VIP_DEVICE="${VIP_DEVICE:-eth0}"
-  VIP_LABEL="${VIP_LABEL:-pgvip}"
-
-  csv_to_array PG_NODES "${POSTGRESQL_NODES:-pg01:10.0.0.121,pg02:10.0.0.122,pg03:10.0.0.123}"
-  csv_to_array ETCD_NODES "${ETCD_NODES:-${POSTGRESQL_NODES:-pg01:10.0.0.121,pg02:10.0.0.122,pg03:10.0.0.123}}"
+  csv_to_array PG_NODES "$POSTGRESQL_NODES"
+  csv_to_array ETCD_NODES "$ETCD_NODES"
+  validate_node_list PG_NODES "[postgresql].nodes"
+  validate_node_list ETCD_NODES "[etcd].nodes"
+  validate_node_tags
+  if [[ -n "$VIP_ADDRESS" ]]; then
+    local item
+    for item in "${PG_NODES[@]}" "${ETCD_NODES[@]}"; do
+      [[ "${item#*:}" != "$VIP_ADDRESS" ]] || die "config [vip].address must not duplicate a PostgreSQL or etcd node IP: $VIP_ADDRESS"
+    done
+  fi
+  if [[ "${SYNCHRONOUS_MODE,,}" == "true" ]]; then
+    (( 10#$SYNCHRONOUS_NODE_COUNT < ${#PG_NODES[@]} )) || die "config [patroni.sync].synchronous_node_count must be less than the PostgreSQL node count when synchronous_mode=true"
+  fi
   CLUSTER_NODES=("${PG_NODES[@]}")
   validate_pg_probackup_backup_host
+}
+
+validate_node_list() {
+  local array_name="$1" config_key="$2" item name address seen_names="" seen_addresses=""
+  local -a nodes
+  eval "nodes=(\"\${${array_name}[@]}\")"
+  ((${#nodes[@]} > 0)) || die "config $config_key must contain at least one node"
+  for item in "${nodes[@]}"; do
+    [[ "$item" == *:* && "${item#*:}" != *:* ]] || die "config $config_key entry '$item' must use node_name:IPv4 format"
+    name="${item%%:*}"
+    address="${item#*:}"
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "config $config_key contains invalid node name '$name'"
+    validate_ipv4 "$address" "$config_key node '$name'"
+    [[ " $seen_names " != *" $name "* ]] || die "config $config_key contains duplicate node name '$name'"
+    [[ " $seen_addresses " != *" $address "* ]] || die "config $config_key contains duplicate IP '$address'"
+    seen_names+=" $name"
+    seen_addresses+=" $address"
+  done
+}
+
+validate_node_tags() {
+  local item node_name tag
+  for item in "${PG_NODES[@]}"; do
+    node_name="${item%%:*}"
+    for tag in nofailover noloadbalance clonefrom nosync; do
+      node_tag_value "$node_name" "$tag" >/dev/null
+    done
+  done
 }
 
 validate_pg_probackup_backup_host() {
@@ -302,13 +427,16 @@ require_database_passwords() {
 }
 
 node_tag_value() {
-  local node_name="$1" tag_name="$2" default_value="$3" var_name
+  local node_name="$1" tag_name="$2" var_name marker value
   var_name="NODE_$(printf '%s' "$node_name" | tr '[:lower:].-' '[:upper:]__')_TAGS_$(printf '%s' "$tag_name" | tr '[:lower:].-' '[:upper:]__')"
-  if [[ -n "${!var_name:-}" ]]; then
-    printf '%s\n' "${!var_name}"
-  else
-    printf '%s\n' "$default_value"
-  fi
+  marker="CONFIG_HAS_${var_name}"
+  [[ "${!marker:-false}" == "true" ]] || die "required config [node.$node_name.tags].$tag_name is missing in $CONFIG_FILE"
+  value="${!var_name:-}"
+  case "${value,,}" in
+    true|false) printf '%s\n' "${value,,}" ;;
+    '') die "required config [node.$node_name.tags].$tag_name must not be empty in $CONFIG_FILE" ;;
+    *) die "config [node.$node_name.tags].$tag_name must be true or false; got '$value'" ;;
+  esac
 }
 
 apply_node_overrides() {
@@ -318,11 +446,11 @@ apply_node_overrides() {
     [[ -n "${!var}" ]] || continue
     base="${var#$prefix}"
     case "$base" in
-      PREFIX) PG_PREFIX="${!var}" ;;
-      DATA_DIR) PG_DATA="${!var}" ;;
-      ETCD_DATA_DIR) ETCD_DATA="${!var}" ;;
-      PATRONI_HOME) PATRONI_HOME="${!var}" ;;
-      PATRONI_LOG_DIR) PATRONI_LOG_DIR="${!var}" ;;
+      PREFIX) [[ "${!var}" == /* ]] || die "config [node.$node_name].prefix must be an absolute path"; PG_PREFIX="${!var}" ;;
+      DATA_DIR) [[ "${!var}" == /* ]] || die "config [node.$node_name].data_dir must be an absolute path"; PG_DATA="${!var}" ;;
+      ETCD_DATA_DIR) [[ "${!var}" == /* ]] || die "config [node.$node_name].etcd_data_dir must be an absolute path"; ETCD_DATA="${!var}" ;;
+      PATRONI_HOME) [[ "${!var}" == /* ]] || die "config [node.$node_name].patroni_home must be an absolute path"; PATRONI_HOME="${!var}" ;;
+      PATRONI_LOG_DIR) [[ "${!var}" == /* ]] || die "config [node.$node_name].patroni_log_dir must be an absolute path"; PATRONI_LOG_DIR="${!var}" ;;
     esac
   done
 }
@@ -645,7 +773,7 @@ normalize_pip_index() {
 
 pip_source_args() {
   PIP_SOURCE_ARGS=()
-  [[ -n "${PIP_SOURCE:-}" ]] || return 0
+  [[ -n "$PIP_SOURCE" ]] || return 0
   if [[ "$PIP_SOURCE" == *" "* ]]; then
     # shellcheck disable=SC2206
     PIP_SOURCE_ARGS=( $PIP_SOURCE )
@@ -656,7 +784,7 @@ pip_source_args() {
 
 yum_source_args() {
   YUM_SOURCE_ARGS=()
-  [[ -n "${YUM_SOURCE:-}" ]] || return 0
+  [[ -n "$YUM_SOURCE" ]] || return 0
   if [[ "$YUM_SOURCE" == *.repo || "$YUM_SOURCE" == *.repo\?* ]]; then
     local repo_dir="/tmp/pg-ha-yum-repos"
     mkdir -p "$repo_dir"
@@ -730,14 +858,14 @@ rpm_repo_install() {
   local -a install_cmd=("$manager")
   local -a disabled_repos=()
   local disabled_repo
-  if [[ -n "${YUM_DISABLE_REPOS:-}" ]]; then
+  if [[ -n "$YUM_DISABLE_REPOS" ]]; then
     IFS=',' read -ra disabled_repos <<< "$YUM_DISABLE_REPOS"
     for disabled_repo in "${!disabled_repos[@]}"; do
       install_cmd+=("--disablerepo=$(trim "${disabled_repos[$disabled_repo]}")")
     done
   fi
   yum_source_args
-  if [[ -n "${YUM_SOURCE:-}" ]]; then
+  if [[ -n "$YUM_SOURCE" ]]; then
     install_cmd+=("${YUM_SOURCE_ARGS[@]}")
   fi
   local rpm_dir=""

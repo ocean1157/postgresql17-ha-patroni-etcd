@@ -179,6 +179,7 @@ download_python() {
   log "download pip packages into $PYTHON_DIR"
   pip_source_args
   if [[ -n "${PIP_SOURCE:-}" ]]; then
+  if [[ -n "$PIP_SOURCE" ]]; then
     source_args=("${PIP_SOURCE_ARGS[@]}")
     log "upgrade local pip tooling on this preparation host"
     python3 -m pip install --upgrade --retries 10 --timeout 120 "${source_args[@]}" "pip<22" setuptools wheel
