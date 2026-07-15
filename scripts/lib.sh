@@ -542,12 +542,14 @@ etcd_hosts_yaml() {
 
 patroni_pg_hba_yaml() {
   local indent="${1:-    }" item node_ip
+  printf '%s- local all,replication all trust\n' "$indent"
+  printf '%s- host all,replication all 127.0.0.1/32 trust\n' "$indent"
   for item in "${PG_NODES[@]}"; do
     node_ip="${item#*:}"
+    printf '%s- host all %s,%s %s/32 trust\n' "$indent" "$POSTGRES_SUPERUSER" "$REWIND_USER" "$node_ip"
     printf '%s- host replication %s %s/32 trust\n' "$indent" "$REPLICATION_USER" "$node_ip"
-    printf '%s- host all %s %s/32 trust\n' "$indent" "$REWIND_USER" "$node_ip"
   done
-  printf '%s- host all all 0.0.0.0/0 scram-sha-256\n' "$indent"
+  printf '%s- host all,replication all 0.0.0.0/0 scram-sha-256\n' "$indent"
 }
 
 etcd_client_endpoints() {
