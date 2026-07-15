@@ -954,6 +954,7 @@ iproute
 iputils
 cronie
 openssh-clients
+acl
 EOF
   case "$compat" in
     el7)

@@ -71,7 +71,7 @@ install_prereqs() {
     fi
   elif command -v apt-get >/dev/null 2>&1; then
     if is_true "$IS_POSTGRESQL_NODE"; then
-      pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony
+      pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony acl
     else
       pkg_install tar gzip sudo chrony
     fi
@@ -168,8 +168,9 @@ configure_firewall() {
 }
 
 prepare_pgdata_parent() {
-  local parent created=false
+  local parent parent_parent created=false
   parent="$(dirname "$PG_DATA")"
+  parent_parent="$(dirname "$parent")"
   if [[ ! -e "$parent" ]]; then
     mkdir -p "$parent"
     created=true
@@ -180,7 +181,15 @@ prepare_pgdata_parent() {
     chmod 0700 "$parent"
   fi
   if ! sudo -u "$POSTGRES_OS_USER" test -w "$parent" || ! sudo -u "$POSTGRES_OS_USER" test -x "$parent"; then
-    die "PostgreSQL data parent '$parent' is not writable by $POSTGRES_OS_USER. Patroni must be able to remove or rename '$PG_DATA' after a failed bootstrap. Use a dedicated writable parent directory or fix its ownership/permissions before deployment"
+    if [[ "$parent" == "/" || "$parent_parent" == "/" ]]; then
+      die "config [postgresql.install].data_dir='$PG_DATA' has top-level parent '$parent', which is not writable by $POSTGRES_OS_USER; refusing to change permissions on '$parent'. Use a dedicated parent such as '/data/pg/pgdata', or explicitly authorize '$parent' before deployment"
+    fi
+    command -v setfacl >/dev/null 2>&1 || die "setfacl is required to grant $POSTGRES_OS_USER access to PostgreSQL data parent '$parent'"
+    log "grant $POSTGRES_OS_USER rwx ACL on PostgreSQL data parent $parent"
+    setfacl -m "u:${POSTGRES_OS_USER}:rwx" "$parent" || die "failed to set ACL on PostgreSQL data parent '$parent'"
+  fi
+  if ! sudo -u "$POSTGRES_OS_USER" test -w "$parent" || ! sudo -u "$POSTGRES_OS_USER" test -x "$parent"; then
+    die "failed to grant $POSTGRES_OS_USER write/execute access to PostgreSQL data parent '$parent'; check filesystem mount options and SELinux policy"
   fi
 }
 
