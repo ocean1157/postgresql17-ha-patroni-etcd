@@ -72,7 +72,7 @@ validate_required_config() {
     POSTGRESQL_INSTALL_PREFIX POSTGRESQL_INSTALL_DATA_DIR POSTGRESQL_INSTALL_CONFIGURE_OPTIONS
     POSTGRESQL_AUTH_SUPERUSER POSTGRESQL_AUTH_SUPERPASS
     POSTGRESQL_AUTH_REPLICATION_USER POSTGRESQL_AUTH_REPLICATION_PASS
-    POSTGRESQL_AUTH_REWIND_USER POSTGRESQL_AUTH_REWIND_PASS
+    POSTGRESQL_AUTH_REWIND_USER POSTGRESQL_AUTH_REWIND_PASS POSTGRESQL_AUTH_PGPASS_FILE
     POSTGRESQL_CONF_LISTEN_ADDRESSES POSTGRESQL_CONF_WORK_MEM POSTGRESQL_CONF_WAL_LEVEL
     POSTGRESQL_CONF_WAL_LOG_HINTS POSTGRESQL_CONF_MAX_WAL_SENDERS
     POSTGRESQL_CONF_MAX_REPLICATION_SLOTS POSTGRESQL_CONF_WAL_KEEP_SIZE
@@ -139,7 +139,7 @@ validate_config_values() {
     [[ "$VIP_CIDR" =~ ^[0-9]+$ ]] && (( VIP_CIDR >= 0 && VIP_CIDR <= 32 )) || die "config [vip].cidr must be an integer from 0 to 32"
     [[ -n "$(trim "$VIP_DEVICE")" ]] || die "config [vip].device is required when [vip].address is set"
   fi
-  for path in "$DEPLOY_INSTALL_ROOT" "$ETCD_DATA_DIR" "$ETCD_CONFIG_FILE" "$ETCD_BIN_DIR" "$POSTGRESQL_INSTALL_PREFIX" "$POSTGRESQL_INSTALL_DATA_DIR" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_BINARY" "$PG_PROBACKUP_JOB_SCRIPT" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_VENV" "$PATRONI_BIN_DIR"; do
+  for path in "$DEPLOY_INSTALL_ROOT" "$ETCD_DATA_DIR" "$ETCD_CONFIG_FILE" "$ETCD_BIN_DIR" "$POSTGRESQL_INSTALL_PREFIX" "$POSTGRESQL_INSTALL_DATA_DIR" "$POSTGRESQL_AUTH_PGPASS_FILE" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_BINARY" "$PG_PROBACKUP_JOB_SCRIPT" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_VENV" "$PATRONI_BIN_DIR"; do
     [[ "$path" == /* ]] || die "filesystem config paths must be absolute; got '$path'"
   done
   [[ "$PG_PROBACKUP_CRON_MINUTE" =~ ^[0-9]+$ ]] && (( 10#$PG_PROBACKUP_CRON_MINUTE <= 59 )) || die "config [pg_probackup].cron_minute must be an integer from 0 to 59"
@@ -291,6 +291,7 @@ map_config_aliases() {
   REPLICATION_PASS="$POSTGRESQL_AUTH_REPLICATION_PASS"
   REWIND_USER="$POSTGRESQL_AUTH_REWIND_USER"
   REWIND_PASS="$POSTGRESQL_AUTH_REWIND_PASS"
+  PGPASS_FILE="$POSTGRESQL_AUTH_PGPASS_FILE"
   PGCONF_LISTEN_ADDRESSES="$POSTGRESQL_CONF_LISTEN_ADDRESSES"
   PGCONF_MAX_CONNECTIONS="${POSTGRESQL_CONF_MAX_CONNECTIONS:-300}"
   PGCONF_SHARED_BUFFERS="${POSTGRESQL_CONF_SHARED_BUFFERS:-4GB}"
@@ -537,6 +538,16 @@ etcd_hosts_yaml() {
     node_ip="${item#*:}"
     printf '    - %s:%s\n' "$node_ip" "$ETCD_CLIENT_PORT"
   done
+}
+
+patroni_pg_hba_yaml() {
+  local indent="${1:-    }" item node_ip
+  for item in "${PG_NODES[@]}"; do
+    node_ip="${item#*:}"
+    printf '%s- host replication %s %s/32 trust\n' "$indent" "$REPLICATION_USER" "$node_ip"
+    printf '%s- host all %s %s/32 trust\n' "$indent" "$REWIND_USER" "$node_ip"
+  done
+  printf '%s- host all all 0.0.0.0/0 scram-sha-256\n' "$indent"
 }
 
 etcd_client_endpoints() {

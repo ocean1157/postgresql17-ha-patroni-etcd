@@ -167,6 +167,23 @@ configure_firewall() {
   fi
 }
 
+prepare_pgdata_parent() {
+  local parent created=false
+  parent="$(dirname "$PG_DATA")"
+  if [[ ! -e "$parent" ]]; then
+    mkdir -p "$parent"
+    created=true
+  fi
+  [[ -d "$parent" ]] || die "PostgreSQL data parent is not a directory: $parent"
+  if [[ "$created" == "true" ]]; then
+    chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$parent"
+    chmod 0700 "$parent"
+  fi
+  if ! sudo -u "$POSTGRES_OS_USER" test -w "$parent" || ! sudo -u "$POSTGRES_OS_USER" test -x "$parent"; then
+    die "PostgreSQL data parent '$parent' is not writable by $POSTGRES_OS_USER. Patroni must be able to remove or rename '$PG_DATA' after a failed bootstrap. Use a dedicated writable parent directory or fix its ownership/permissions before deployment"
+  fi
+}
+
 create_users_dirs() {
   log "create directories for node roles: postgresql=$IS_POSTGRESQL_NODE etcd=$IS_ETCD_NODE"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
@@ -176,6 +193,7 @@ create_users_dirs() {
     chmod 755 "$ETCD_DATA" "$ETCD_BIN_DIR"
   fi
   if is_true "$IS_POSTGRESQL_NODE"; then
+    prepare_pgdata_parent
     mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_BIN_DIR" /var/run/postgresql
     chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
     chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
@@ -183,6 +201,34 @@ create_users_dirs() {
     chmod 775 /var/run/postgresql
     chmod 700 "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR"
   fi
+}
+
+pgpass_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//:/\\:}"
+  printf '%s' "$value"
+}
+
+write_pgpass() {
+  local item node_ip tmp_file replication_user replication_pass rewind_user rewind_pass
+  tmp_file="${PGPASS_FILE}.tmp"
+  replication_user="$(pgpass_escape "$REPLICATION_USER")"
+  replication_pass="$(pgpass_escape "$REPLICATION_PASS")"
+  rewind_user="$(pgpass_escape "$REWIND_USER")"
+  rewind_pass="$(pgpass_escape "$REWIND_PASS")"
+
+  log "write $PGPASS_FILE with replication and rewind credentials only"
+  mkdir -p "$(dirname "$PGPASS_FILE")"
+  install -m 0600 /dev/null "$tmp_file"
+  for item in "${PG_NODES[@]}"; do
+    node_ip="${item#*:}"
+    printf '%s:%s:*:%s:%s\n' "$node_ip" "$POSTGRES_PORT" "$replication_user" "$replication_pass" >> "$tmp_file"
+    printf '%s:%s:*:%s:%s\n' "$node_ip" "$POSTGRES_PORT" "$rewind_user" "$rewind_pass" >> "$tmp_file"
+  done
+  chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$tmp_file"
+  chmod 0600 "$tmp_file"
+  mv -f "$tmp_file" "$PGPASS_FILE"
 }
 
 reconcile_node_roles() {
@@ -212,6 +258,7 @@ export PGPORT=${POSTGRES_PORT}
 export PGDATABASE=${PGDATABASE}
 export PGUSER=${POSTGRES_SUPERUSER}
 export PGHOST=/var/run/postgresql
+export PGPASSFILE=${PGPASS_FILE}
 export PATRONI_CONFIG=${PATRONI_HOME}/patroni.yml
 export PATRONICTL_CONFIG_FILE=${PATRONI_HOME}/patroni.yml
 export ETCDCTL_ENDPOINTS=$(etcd_client_endpoints)
@@ -515,8 +562,9 @@ EOF
 }
 
 write_patroni_config() {
-  local etcd_hosts
+  local etcd_hosts pg_hba
   etcd_hosts="$(etcd_hosts_yaml)"
+  pg_hba="$(patroni_pg_hba_yaml "    ")"
   local tag_nofailover tag_noloadbalance tag_clonefrom tag_nosync
   tag_nofailover="$(node_tag_value "$MY_POSTGRESQL_NAME" nofailover)"
   tag_noloadbalance="$(node_tag_value "$MY_POSTGRESQL_NAME" noloadbalance)"
@@ -584,14 +632,7 @@ bootstrap:
     - locale: C
     - data-checksums
   pg_hba:
-    - host all all 0.0.0.0/0 scram-sha-256
-    - host replication ${REPLICATION_USER} 0.0.0.0/0 scram-sha-256
-  users:
-    ${REWIND_USER}:
-      password: ${REWIND_PASS}
-      options:
-        - createrole
-        - createdb
+${pg_hba}
 
 postgresql:
   listen: 0.0.0.0:${POSTGRES_PORT}
@@ -599,7 +640,7 @@ postgresql:
   data_dir: ${PG_DATA}
   bin_dir: ${PG_PREFIX}/bin
   config_dir: ${PG_DATA}
-  pgpass: /home/${POSTGRES_OS_USER}/.pgpass
+  pgpass: ${PGPASS_FILE}
   authentication:
     superuser:
       username: ${POSTGRES_SUPERUSER}
@@ -800,6 +841,7 @@ main() {
     write_etcd_config
   fi
   if is_true "$IS_POSTGRESQL_NODE"; then
+    write_pgpass
     write_postgres_env
     install_postgres
     install_pg_cron

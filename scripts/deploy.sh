@@ -57,74 +57,6 @@ run_remote_retry() {
   return 1
 }
 
-shell_quote() {
-  printf '%q' "$1"
-}
-
-sql_literal() {
-  local value="$1"
-  value="${value//\'/\'\'}"
-  printf "'%s'" "$value"
-}
-
-reconcile_database_roles() {
-  local superuser_sql superpass_sql replication_user_sql replication_pass_sql rewind_user_sql rewind_pass_sql
-  local sql sql_b64 superuser_shell superpass_shell database_shell psql_shell
-  superuser_sql="$(sql_literal "$POSTGRES_SUPERUSER")"
-  superpass_sql="$(sql_literal "$POSTGRES_SUPERPASS")"
-  replication_user_sql="$(sql_literal "$REPLICATION_USER")"
-  replication_pass_sql="$(sql_literal "$REPLICATION_PASS")"
-  rewind_user_sql="$(sql_literal "$REWIND_USER")"
-  rewind_pass_sql="$(sql_literal "$REWIND_PASS")"
-  superuser_shell="$(shell_quote "$POSTGRES_SUPERUSER")"
-  superpass_shell="$(shell_quote "$POSTGRES_SUPERPASS")"
-  database_shell="$(shell_quote "$PGDATABASE")"
-  psql_shell="$(shell_quote "$PG_PREFIX/bin/psql")"
-
-  sql="DO \$roles\$
-BEGIN
-  EXECUTE format('ALTER ROLE %I WITH LOGIN SUPERUSER PASSWORD %L VALID UNTIL %L', $superuser_sql, $superpass_sql, 'infinity');
-
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $replication_user_sql) THEN
-    EXECUTE format('ALTER ROLE %I WITH LOGIN REPLICATION PASSWORD %L VALID UNTIL %L', $replication_user_sql, $replication_pass_sql, 'infinity');
-  ELSE
-    EXECUTE format('CREATE ROLE %I WITH LOGIN REPLICATION PASSWORD %L VALID UNTIL %L', $replication_user_sql, $replication_pass_sql, 'infinity');
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $rewind_user_sql) THEN
-    EXECUTE format('ALTER ROLE %I WITH LOGIN CREATEDB CREATEROLE PASSWORD %L VALID UNTIL %L', $rewind_user_sql, $rewind_pass_sql, 'infinity');
-  ELSE
-    EXECUTE format('CREATE ROLE %I WITH LOGIN CREATEDB CREATEROLE PASSWORD %L VALID UNTIL %L', $rewind_user_sql, $rewind_pass_sql, 'infinity');
-  END IF;
-END
-\$roles\$;"
-  sql_b64="$(printf '%s' "$sql" | base64 | tr -d '\n')"
-
-  log "按 cluster.env 同步 PostgreSQL 超级用户、流复制用户和 rewind 用户密码"
-  run_remote_retry "$(primary_ip)" "leader_ip=\$('$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
-    test -n \"\$leader_ip\"; \
-    printf '%s' '$sql_b64' | base64 -d | PGPASSWORD=$superpass_shell $psql_shell -X -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U $superuser_shell -d $database_shell -v ON_ERROR_STOP=1"
-}
-
-verify_database_login() {
-  local label="$1" database_user="$2" database_password="$3"
-  local user_shell password_shell database_shell psql_shell
-  user_shell="$(shell_quote "$database_user")"
-  password_shell="$(shell_quote "$database_password")"
-  database_shell="$(shell_quote "$PGDATABASE")"
-  psql_shell="$(shell_quote "$PG_PREFIX/bin/psql")"
-  log "验证 $label 用户 $database_user 的密码登录"
-  run_remote_retry "$(primary_ip)" "leader_ip=\$('$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'); \
-    test -n \"\$leader_ip\"; \
-    PGPASSWORD=$password_shell $psql_shell -XAt -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U $user_shell -d $database_shell -v ON_ERROR_STOP=1 -c 'select 1' | grep -qx 1"
-}
-
-verify_database_credentials() {
-  verify_database_login "PostgreSQL 超级" "$POSTGRES_SUPERUSER" "$POSTGRES_SUPERPASS"
-  verify_database_login "流复制" "$REPLICATION_USER" "$REPLICATION_PASS"
-  verify_database_login "pg_rewind" "$REWIND_USER" "$REWIND_PASS"
-}
-
 node_project_dir() {
   local ip="$1"
   if [[ "$ip" == "$LOCAL_IP" ]]; then
@@ -291,6 +223,14 @@ initialize_pg_probackup_node() {
   run_remote_retry "$ip" "cd '$remote_project_dir' && PG_HARDWARE_DEFAULTS_RESOLVED=true bash scripts/node-install.sh --init-pg-probackup"
 }
 
+initialize_pg_probackup_leader() {
+  local leader_ip
+  leader_ip="$(run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | awk '\$1 == \"|\" && \$6 == \"Leader\" {print \$4; exit}'")"
+  leader_ip="${leader_ip//$'\r'/}"
+  [[ -n "$leader_ip" ]] || die "cannot determine Patroni Leader IP for pg_probackup initialization"
+  initialize_pg_probackup_node "$leader_ip"
+}
+
 run_initial_full_backup_node() {
   local ip="$1"
   log "request initial FULL pg_probackup backup on $ip"
@@ -313,6 +253,18 @@ verify_max_connections_node() {
   log "verify max_connections=$PGCONF_MAX_CONNECTIONS on $ip"
   run_remote_retry "$ip" "actual=\$(su - '$POSTGRES_OS_USER' -c \"psql -XAt -c 'show max_connections'\"); \
     test \"\$actual\" = '$PGCONF_MAX_CONNECTIONS' || { echo \"max_connections expected=$PGCONF_MAX_CONNECTIONS actual=\$actual\"; exit 1; }"
+}
+
+apply_patroni_hba_config() {
+  local hba_yaml hba_b64
+  hba_yaml="postgresql:
+  pg_hba:
+$(patroni_pg_hba_yaml "    ")"
+  hba_b64="$(printf '%s' "$hba_yaml" | base64 | tr -d '\n')"
+
+  log "apply cluster-node-only trust rules for replication and rewind"
+  run_remote_retry "$(primary_ip)" "printf '%s' '$hba_b64' | base64 -d | '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' edit-config '$SCOPE' --apply - --force"
+  sleep "$PATRONI_LOOP_WAIT"
 }
 
 apply_patroni_runtime_config() {
@@ -427,10 +379,10 @@ main() {
 
   log "wait for Patroni Leader"
   run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
-  reconcile_database_roles
-  verify_database_credentials
+  initialize_pg_probackup_leader
+  apply_patroni_hba_config
 
-  log "wait for Patroni replicas to stream with synchronized credentials"
+  log "wait for Patroni replicas to stream with restricted trust rules"
   run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   apply_patroni_runtime_config
