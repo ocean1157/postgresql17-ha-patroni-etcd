@@ -123,6 +123,7 @@ validate_config_values() {
 
   case "${REPOSITORY_OFFLINE_INSTALL,,}" in auto|true|false) ;; *) die "config [repository].offline_install must be auto, true, or false" ;; esac
   case "${OS_MANAGE_SELINUX,,}" in false|permissive) ;; *) die "config [os].manage_selinux must be false or permissive" ;; esac
+  [[ "$POSTGRESQL_AUTH_SUPERUSER" != "$POSTGRESQL_AUTH_REPLICATION_USER" && "$POSTGRESQL_AUTH_SUPERUSER" != "$POSTGRESQL_AUTH_REWIND_USER" && "$POSTGRESQL_AUTH_REPLICATION_USER" != "$POSTGRESQL_AUTH_REWIND_USER" ]] || die "config [postgresql.auth] superuser, replication_user, and rewind_user must be different users"
   validate_port "$DEPLOY_SSH_PORT" "[deploy].ssh_port"
   validate_port "$ETCD_CLIENT_PORT" "[etcd].client_port"
   validate_port "$ETCD_PEER_PORT" "[etcd].peer_port"

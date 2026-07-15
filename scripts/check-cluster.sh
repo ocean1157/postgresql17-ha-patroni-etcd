@@ -20,4 +20,4 @@ echo "== patroni cluster =="
 
 echo
 echo "== postgres version =="
-PGPASSWORD="$POSTGRES_SUPERPASS" "$PG_PREFIX/bin/psql" -h "$(primary_ip)" -p "$POSTGRES_PORT" -U "$POSTGRES_SUPERUSER" -d postgres -c "select version();" || true
+PGPASSWORD="$POSTGRES_SUPERPASS" "$PG_PREFIX/bin/psql" -h "$(primary_ip)" -p "$POSTGRES_PORT" -U "$POSTGRES_SUPERUSER" -d "$PGDATABASE" -c "select version();" || true
