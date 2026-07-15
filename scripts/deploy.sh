@@ -158,6 +158,7 @@ check_path x '$ETCD_BIN_DIR/etcd'
 check_path x '$ETCD_BIN_DIR/etcdctl'
 check_path x '$ETCD_BIN_DIR/etcdutl'
 check_path f '$ETCD_CONFIG_FILE'
+check_path d '$ETCD_LOG_DIR'
 check_path f /etc/systemd/system/etcd.service
 exit \"\$failed\""
 }
@@ -193,6 +194,8 @@ check_path x '$PG_PREFIX/bin/pg_repack'
 check_path f '$PG_PREFIX/share/extension/pg_repack.control'
 check_path x '$PG_PROBACKUP_BINARY'
 check_path x '$PG_PROBACKUP_JOB_SCRIPT'
+check_path d '$PATRONI_LOG_DIR'
+check_path d '$PG_PROBACKUP_LOG_DIR'
 check_path f /etc/systemd/system/patroni.service
 if [[ '$cron_expected' == 'true' ]] && crontab -u '$POSTGRES_OS_USER' -l 2>/dev/null | grep -Fq '$PG_PROBACKUP_JOB_SCRIPT'; then
   echo 'OK postgres crontab $PG_PROBACKUP_JOB_SCRIPT'
@@ -286,7 +289,7 @@ apply_patroni_runtime_config() {
   run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' restart --force '$SCOPE'"
 
   log "wait for Patroni cluster after runtime config"
-  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; tail -n 120 '$PATRONI_LOG_DIR/patroni.log' 2>/dev/null || journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   # When max_connections is reduced, replicas temporarily keep the higher
   # value recorded in pg_controldata. Checkpoint the leader, then restart only
@@ -296,7 +299,7 @@ apply_patroni_runtime_config() {
     PGPASSWORD='$POSTGRES_SUPERPASS' '$PG_PREFIX/bin/psql' -h \"\$leader_ip\" -p '$POSTGRES_PORT' -U '$POSTGRES_SUPERUSER' -d '$PGDATABASE' -v ON_ERROR_STOP=1 -c 'CHECKPOINT;'"
   sleep 5
   run_remote_retry "$(primary_ip)" "'$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' restart --force --pending '$SCOPE' || true"
-  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; tail -n 120 '$PATRONI_LOG_DIR/patroni.log' 2>/dev/null || journalctl -u patroni.service -n 120 --no-pager; exit 1"
 }
 
 parallel_limit() {
@@ -373,17 +376,17 @@ main() {
   run_parallel_phase "启动 etcd" start_etcd_node "${etcd_ips[@]}"
 
   log "wait for etcd health"
-  run_remote_retry "$(primary_etcd_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; systemctl status etcd.service --no-pager; exit 1"
+  run_remote_retry "$(primary_etcd_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; tail -n 120 '$ETCD_LOG_DIR/etcd.log' 2>/dev/null || systemctl status etcd.service --no-pager; exit 1"
 
   run_parallel_phase "启动 patroni" start_patroni_node "${pg_ips[@]}"
 
   log "wait for Patroni Leader"
-  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && exit 0; sleep 2; done; tail -n 120 '$PATRONI_LOG_DIR/patroni.log' 2>/dev/null || journalctl -u patroni.service -n 120 --no-pager; exit 1"
   initialize_pg_probackup_leader
   apply_patroni_hba_config
 
   log "wait for Patroni replicas to stream with restricted trust rules"
-  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; journalctl -u patroni.service -n 120 --no-pager; exit 1"
+  run_remote_retry "$(primary_ip)" "for i in {1..120}; do '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'Leader' && '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' list 2>/dev/null | grep -q 'streaming' && exit 0; sleep 2; done; tail -n 120 '$PATRONI_LOG_DIR/patroni.log' 2>/dev/null || journalctl -u patroni.service -n 120 --no-pager; exit 1"
 
   apply_patroni_runtime_config
   run_parallel_phase "验证 max_connections" verify_max_connections_node "${pg_ips[@]}"

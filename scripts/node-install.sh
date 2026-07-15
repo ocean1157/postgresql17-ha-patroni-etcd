@@ -188,18 +188,20 @@ create_users_dirs() {
   log "create directories for node roles: postgresql=$IS_POSTGRESQL_NODE etcd=$IS_ETCD_NODE"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
   if is_true "$IS_ETCD_NODE"; then
-    mkdir -p "$ETCD_DATA" "$ETCD_BIN_DIR"
-    chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$ETCD_DATA" "$ETCD_BIN_DIR"
+    mkdir -p "$ETCD_DATA" "$ETCD_LOG_DIR" "$ETCD_BIN_DIR"
+    chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$ETCD_DATA" "$ETCD_LOG_DIR" "$ETCD_BIN_DIR"
     chmod 755 "$ETCD_DATA" "$ETCD_BIN_DIR"
+    chmod 750 "$ETCD_LOG_DIR"
   fi
   if is_true "$IS_POSTGRESQL_NODE"; then
     prepare_pgdata_parent
-    mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_BIN_DIR" /var/run/postgresql
-    chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PATRONI_LOG_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
+    mkdir -p "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR" "$PATRONI_HOME" "$PATRONI_LOG_DIR" "$PATRONI_BIN_DIR" /var/run/postgresql
+    chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX" "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR" "$PATRONI_LOG_DIR" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
     chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" /var/run/postgresql
     chmod 755 "$PG_PREFIX" "$PATRONI_HOME" "$PATRONI_BIN_DIR"
     chmod 775 /var/run/postgresql
     chmod 700 "$PG_DATA" "$PG_PROBACKUP_BACKUP_DIR"
+    chmod 750 "$PG_PROBACKUP_LOG_DIR" "$PATRONI_LOG_DIR"
   fi
 }
 
@@ -492,7 +494,8 @@ initial-cluster-token: ${CLUSTER_NAME}
 initial-cluster: ${initial_cluster}
 initial-cluster-state: new
 logger: zap
-log-outputs: [stderr]
+log-outputs:
+  - ${ETCD_LOG_DIR}/etcd.log
 EOF
 
   cat >/etc/systemd/system/etcd.service <<EOF
@@ -574,6 +577,9 @@ write_patroni_config() {
 scope: ${SCOPE}
 namespace: /service/
 name: ${MY_POSTGRESQL_NAME}
+
+log:
+  dir: ${PATRONI_LOG_DIR}
 
 restapi:
   listen: ${MY_IP}:${PATRONI_PORT}
@@ -672,8 +678,8 @@ EOF
 
 configure_pg_probackup() {
   log "configure pg_probackup cron"
-  mkdir -p "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
+  mkdir -p "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR"
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR"
 
   mkdir -p "$(dirname "$PG_PROBACKUP_JOB_SCRIPT")"
   cat >"$PG_PROBACKUP_JOB_SCRIPT" <<EOF
@@ -689,7 +695,7 @@ export PGHOST=/var/run/postgresql
 export PATH=${PG_PREFIX}/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
 export LD_LIBRARY_PATH=${PG_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
 
-LOG_DIR=/var/log/pg_probackup
+LOG_DIR=${PG_PROBACKUP_LOG_DIR}
 BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
 INSTANCE=${PG_PROBACKUP_INSTANCE}
 FULL_DAY=${PG_PROBACKUP_FULL_BACKUP_DAY}
@@ -764,8 +770,8 @@ initialize_pg_probackup_instance() {
   [[ -x "$PG_PROBACKUP_BINARY" ]] || die "pg_probackup binary not found: $PG_PROBACKUP_BINARY"
   [[ -d "$PG_DATA" ]] || die "PostgreSQL data directory is not initialized: $PG_DATA"
 
-  mkdir -p "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
-  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" /var/log/pg_probackup
+  mkdir -p "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR"
+  chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR"
 
   if [[ ! -d "$PG_PROBACKUP_BACKUP_DIR/backups" ]]; then
     su - "$POSTGRES_OS_USER" -c "$PG_PROBACKUP_BINARY init -B '$PG_PROBACKUP_BACKUP_DIR'"
