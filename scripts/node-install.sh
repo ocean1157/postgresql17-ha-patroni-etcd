@@ -744,9 +744,11 @@ else
   BACKUP_MODE=\$INCREMENTAL_MODE
 fi
 
-if ! "\$PG_PROBACKUP_BIN" show -B "\$BACKUP_DIR" --instance "\$INSTANCE" 2>/dev/null | grep -Eq '^[[:space:]]+[A-Z0-9]+[[:space:]]+(FULL|PAGE|DELTA|PTRACK)[[:space:]]'; then
-  echo "[\$(date '+%F %T')] no valid previous backup found, switch to FULL backup"
+if ! "\$PG_PROBACKUP_BIN" show -B "\$BACKUP_DIR" --instance "\$INSTANCE" 2>/dev/null | grep -E 'FULL.*OK' >/dev/null; then
+  echo "[\$(date '+%F %T')] no valid FULL backup found, switch to FULL backup"
   BACKUP_MODE=FULL
+else
+  echo "[\$(date '+%F %T')] valid FULL backup found, selected backup mode: \$BACKUP_MODE"
 fi
 
 echo "[\$(date '+%F %T')] run \$BACKUP_MODE backup"
