@@ -365,6 +365,7 @@ install_postgres() {
   # shellcheck disable=SC2206
   local configure_options=( $PG_CONFIGURE_OPTIONS )
   precheck_postgresql_build_dependencies
+  precheck_postgresql_configure_compatibility "$build_dir"
   (
     cd "$build_dir"
     run_with_heartbeat "PostgreSQL configure" ./configure --prefix="$PG_PREFIX" "${configure_options[@]}"

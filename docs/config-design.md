@@ -69,6 +69,9 @@ nosync="false"
 zlib、UUID、Python、ICU、LZ4、ZSTD、XML/XSLT、LDAP、PAM、systemd、SELinux、
 GSSAPI、LLVM、Tcl 和 Perl 等可选功能对应的开发包。PostgreSQL 执行 `configure`
 前还会再次检查所有基础及可选依赖；缺包时错误会同时列出编译选项和缺失包名。
+脚本还会读取当前 PostgreSQL 源码的 `configure --help`，拒绝该版本不支持的
+选项，并校验 `--with-llvm` 对应的最低 LLVM 版本。此类确定性错误使用专用退出码，
+不会重复执行三次；交互式部署会提示取消编译选项、改用兼容版本或退出安装。
 
 `deploy.sh` 为每次部署生成独立运行 ID。按 Ctrl+C 后，部署机会终止当前并发任务，
 并通过该运行 ID 对所有节点上的安装进程组发送 TERM/KILL，避免 SSH 退出后远程

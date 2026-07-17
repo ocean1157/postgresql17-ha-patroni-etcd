@@ -88,6 +88,10 @@ bash scripts/check-cluster.sh
 
 ## 安装包说明
 
-[packages/postgresql.version](packages/postgresql.version) 固定为 `17.10`。`download-package.sh` 会下载四类核心软件包、RPM 递归依赖和 Patroni 的 Python 依赖，并生成校验清单。请在与目标机相同的 OS 大版本、CPU 架构和 Python 版本的联网环境执行，然后整体打包 `packages/` 搬到离线环境。
+PostgreSQL 版本只由 `config/cluster.env` 的 `[postgresql].version` 指定。
+`download-package.sh`、节点安装和源码包文件名均使用该配置值，不再维护重复的
+`packages/postgresql.version` 标记文件。下载脚本会准备核心软件包、RPM 递归依赖和
+Patroni 的 Python 依赖，并生成校验清单。请在与目标机相同的 OS 大版本、CPU 架构和
+Python 版本的联网环境执行，然后整体打包 `packages/` 搬到离线环境。
 
 部署安装时默认 `offline_install="auto"`：优先使用 yum/dnf 和 pip 在线源，在线源不可用时才回退到 `packages/rpm` 和 `packages/python`。设置 `[repository] offline_install="true"` 后强制离线安装；设置为 `"false"` 后只使用在线源，不回退本地包。

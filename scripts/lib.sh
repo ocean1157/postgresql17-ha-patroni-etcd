@@ -13,6 +13,11 @@ die() {
   exit 1
 }
 
+dependency_die() {
+  printf '[%s] DEPENDENCY_ERROR: %s\n' "$(date '+%F %T')" "$*" >&2
+  exit 42
+}
+
 load_config() {
   local section="" line key value var section_key
   [[ -f "$CONFIG_FILE" ]] || die "config file not found: $CONFIG_FILE"
@@ -1078,6 +1083,45 @@ precheck_postgresql_build_dependencies() {
     die "PostgreSQL build dependency precheck failed for configure_options='$PG_CONFIGURE_OPTIONS'. Missing packages: ${missing[*]}. Install them or remove the corresponding --with-* options"
   fi
   log "PostgreSQL build dependency precheck passed for configure_options='$PG_CONFIGURE_OPTIONS'"
+}
+
+precheck_postgresql_configure_compatibility() {
+  local source_dir="$1" option option_name help_text llvm_min llvm_actual
+  local -a unsupported=()
+  help_text="$(bash "$source_dir/configure" --help)"
+
+  for option in $PG_CONFIGURE_OPTIONS; do
+    [[ "$option" == --* ]] || continue
+    option_name="${option%%=*}"
+    if printf '%s\n' "$help_text" | grep -Fq -- "$option_name"; then
+      continue
+    fi
+    case "$option_name" in
+      --with-zlib)
+        printf '%s\n' "$help_text" | grep -Fq -- '--without-zlib' && continue
+        ;;
+      --with-icu)
+        printf '%s\n' "$help_text" | grep -Fq -- '--without-icu' && continue
+        ;;
+      --with-readline)
+        printf '%s\n' "$help_text" | grep -Fq -- '--without-readline' && continue
+        ;;
+    esac
+    unsupported+=("$option")
+  done
+
+  if [[ "${#unsupported[@]}" -gt 0 ]]; then
+    dependency_die "PostgreSQL $POSTGRES_VERSION does not support configure option(s): ${unsupported[*]}. Remove the option(s), select a PostgreSQL version that supports them, or exit the installation"
+  fi
+
+  if configure_option_enabled --with-llvm; then
+    llvm_min="$(grep -Eo 'at least [0-9]+([.][0-9]+)* is required' "$source_dir/configure" | head -n 1 | awk '{print $3}')"
+    llvm_actual="$(llvm-config --version 2>/dev/null || true)"
+    [[ -n "$llvm_actual" ]] || dependency_die "--with-llvm requires llvm-config, but it is not installed or not on PATH"
+    if [[ -n "$llvm_min" && "$(printf '%s\n%s\n' "$llvm_min" "$llvm_actual" | sort -V | head -n 1)" != "$llvm_min" ]]; then
+      dependency_die "--with-llvm for PostgreSQL $POSTGRES_VERSION requires LLVM >= $llvm_min, but $(command -v llvm-config) reports $llvm_actual. Install a compatible LLVM and set LLVM_CONFIG, remove --with-llvm, or select a compatible PostgreSQL version"
+    fi
+  fi
 }
 
 rpm_etcd_prereq_packages() {

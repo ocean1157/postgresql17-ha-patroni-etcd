@@ -46,17 +46,23 @@ run_remote() {
 }
 
 run_remote_retry() {
-  local ip="$1"
+  local ip="$1" status
   shift
   local attempt
   for attempt in 1 2 3; do
     if run_remote "$ip" "$@"; then
       return 0
+    else
+      status=$?
+    fi
+    if [[ "$status" -eq 42 ]]; then
+      log "节点 $ip 报告不可重试的依赖或版本冲突，停止重试"
+      return 42
     fi
     log "节点 $ip 远程命令第 ${attempt} 次执行失败，5 秒后重试"
     sleep 5
   done
-  return 1
+  return "$status"
 }
 
 stop_remote_install() {
@@ -343,7 +349,7 @@ parallel_limit() {
 }
 
 run_parallel_phase() {
-  local phase="$1" func="$2" limit running=0 ip pid failed=0
+  local phase="$1" func="$2" limit running=0 ip pid failed=0 dependency_failed=0 status
   shift 2
   local -a pids=()
   local -A pid_ip=()
@@ -362,9 +368,13 @@ run_parallel_phase() {
 
     if [[ "$running" -ge "$limit" ]]; then
       local first_pid="${pids[0]}"
-      if ! wait "$first_pid"; then
+      if wait "$first_pid"; then
+        status=0
+      else
+        status=$?
         log "${phase} 节点 ${pid_ip[$first_pid]} 执行失败"
         failed=1
+        [[ "$status" -eq 42 ]] && dependency_failed=1
       fi
       unset "pid_ip[$first_pid]"
       pids=("${pids[@]:1}")
@@ -374,15 +384,52 @@ run_parallel_phase() {
   done
 
   for pid in "${pids[@]}"; do
-    if ! wait "$pid"; then
+    if wait "$pid"; then
+      status=0
+    else
+      status=$?
       log "${phase} 节点 ${pid_ip[$pid]} 执行失败"
       failed=1
+      [[ "$status" -eq 42 ]] && dependency_failed=1
     fi
   done
   ACTIVE_PHASE_PIDS=()
 
+  if [[ "$dependency_failed" -eq 1 ]]; then
+    dependency_resolution_prompt "$phase"
+  fi
   [[ "$failed" -eq 0 ]] || die "${phase} 失败"
   log "${phase} 完成"
+}
+
+dependency_resolution_prompt() {
+  local phase="$1" choice
+  if [[ ! -t 0 ]]; then
+    dependency_die "$phase encountered an incompatible or unavailable dependency. Non-interactive deployment exits safely; adjust configure_options or package/version selection and rerun"
+  fi
+
+  printf '\n依赖或版本无法满足，请选择：\n' >&2
+  printf '  1) 取消本次安装，修改 configure_options 后复跑\n' >&2
+  printf '  2) 取消本次安装，改用兼容的软件版本/依赖包后复跑\n' >&2
+  printf '  3) 立即退出安装\n' >&2
+  while true; do
+    read -r -p '请输入 1、2 或 3: ' choice
+    case "$choice" in
+      1)
+        die "已取消；请移除不兼容的 configure_options 后重新执行 deploy.sh"
+        ;;
+      2)
+        die "已取消；请准备匹配版本的源码包和依赖包、同步修改配置后重新执行 deploy.sh"
+        ;;
+      3)
+        log "用户选择立即退出安装"
+        exit 130
+        ;;
+      *)
+        printf '无效选择，请重新输入。\n' >&2
+        ;;
+    esac
+  done
 }
 
 main() {
