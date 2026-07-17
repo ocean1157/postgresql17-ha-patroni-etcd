@@ -16,6 +16,8 @@ require_database_passwords
 
 ssh_base=(ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
 scp_base=(scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/root/.ssh/known_hosts)
+DEPLOY_RUN_ID="$(date +%Y%m%d%H%M%S)-$$"
+ACTIVE_PHASE_PIDS=()
 if [[ -n "$SSH_KEY" ]]; then
   [[ -r "$SSH_KEY" ]] || die "configured SSH private key is not readable: $SSH_KEY"
   ssh_base+=(-i "$SSH_KEY")
@@ -57,6 +59,29 @@ run_remote_retry() {
   return 1
 }
 
+stop_remote_install() {
+  local ip="$1"
+  "${ssh_base[@]}" -o ConnectTimeout=3 "${SSH_USER}@${ip}" \
+    "pid_file='/tmp/postgresql-ha-install-${DEPLOY_RUN_ID}.pid'; if test -s \"\$pid_file\"; then pid=\$(cat \"\$pid_file\"); kill -TERM -- \"-\$pid\" 2>/dev/null || kill -TERM \"\$pid\" 2>/dev/null || true; sleep 1; kill -KILL -- \"-\$pid\" 2>/dev/null || true; rm -f \"\$pid_file\"; fi" \
+    >/dev/null 2>&1 || true
+}
+
+interrupt_deployment() {
+  local pid ip
+  trap - INT TERM
+  log "deployment interrupted; terminating local and remote installation processes"
+  for pid in "${ACTIVE_PHASE_PIDS[@]:-}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  while IFS= read -r ip; do
+    stop_remote_install "$ip" &
+  done < <(all_node_ips)
+  wait || true
+  exit 130
+}
+
+trap interrupt_deployment INT TERM
+
 node_project_dir() {
   local ip="$1"
   if [[ "$ip" == "$LOCAL_IP" ]]; then
@@ -95,7 +120,7 @@ install_node() {
     POSTGRESQL_CONF_MAX_WORKER_PROCESSES='$PGCONF_MAX_WORKER_PROCESSES' \
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS='$PGCONF_MAX_PARALLEL_WORKERS' \
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER='$PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER' \
-    SKIP_SERVICE_START=1 bash scripts/node-install.sh"
+    SKIP_SERVICE_START=1 setsid bash scripts/node-install.sh --deploy-run-id '$DEPLOY_RUN_ID'"
 }
 
 enable_etcd_unit() {
@@ -331,6 +356,7 @@ run_parallel_phase() {
     ) &
     pid=$!
     pids+=("$pid")
+    ACTIVE_PHASE_PIDS=("${pids[@]}")
     pid_ip["$pid"]="$ip"
     running=$((running + 1))
 
@@ -342,6 +368,7 @@ run_parallel_phase() {
       fi
       unset "pid_ip[$first_pid]"
       pids=("${pids[@]:1}")
+      ACTIVE_PHASE_PIDS=("${pids[@]}")
       running=$((running - 1))
     fi
   done
@@ -352,6 +379,7 @@ run_parallel_phase() {
       failed=1
     fi
   done
+  ACTIVE_PHASE_PIDS=()
 
   [[ "$failed" -eq 0 ]] || die "${phase} 失败"
   log "${phase} 完成"

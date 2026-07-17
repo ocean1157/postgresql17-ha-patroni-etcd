@@ -62,8 +62,17 @@ nosync="false"
 长时间没有新输出时也会每 30 秒打印一次 still running，便于确认安装进程仍然存活。
 
 `--with-python` 已作为默认编译选项放入 `[postgresql.install] configure_options`。
-生产上如需额外启用 LZ4/ZSTD，请先准备 `lz4-devel`、`libzstd-devel` 等依赖，
-再把 `--with-lz4`、`--with-zstd` 加入 `configure_options`。
+生产上如需额外启用 LZ4/ZSTD，可把 `--with-lz4`、`--with-zstd` 加入
+`configure_options`，脚本会自动准备 `lz4-devel`、`libzstd-devel` 等依赖。
+
+安装脚本和 `download-package.sh` 会解析 `configure_options`，自动追加 OpenSSL、
+zlib、UUID、Python、ICU、LZ4、ZSTD、XML/XSLT、LDAP、PAM、systemd、SELinux、
+GSSAPI、LLVM、Tcl 和 Perl 等可选功能对应的开发包。PostgreSQL 执行 `configure`
+前还会再次检查所有基础及可选依赖；缺包时错误会同时列出编译选项和缺失包名。
+
+`deploy.sh` 为每次部署生成独立运行 ID。按 Ctrl+C 后，部署机会终止当前并发任务，
+并通过该运行 ID 对所有节点上的安装进程组发送 TERM/KILL，避免 SSH 退出后远程
+configure、make、包安装等进程继续运行。
 
 ## PostgreSQL Sections
 

@@ -23,6 +23,63 @@ IS_POSTGRESQL_NODE=false
 IS_ETCD_NODE=false
 is_postgresql_node "$MY_IP" && IS_POSTGRESQL_NODE=true
 is_etcd_node "$MY_IP" && IS_ETCD_NODE=true
+DEPLOY_RUN_ID=""
+ACTIVE_CHILD_PID=""
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --deploy-run-id)
+      [[ "$#" -ge 2 && "$2" =~ ^[A-Za-z0-9._-]+$ ]] || die "--deploy-run-id requires a safe non-empty value"
+      DEPLOY_RUN_ID="$2"
+      shift 2
+      ;;
+    --init-pg-probackup)
+      INIT_PG_PROBACKUP_ONLY=true
+      shift
+      ;;
+    *)
+      die "unknown node-install argument: $1"
+      ;;
+  esac
+done
+
+NODE_INSTALL_PID_FILE=""
+if [[ -n "$DEPLOY_RUN_ID" ]]; then
+  NODE_INSTALL_PID_FILE="/tmp/postgresql-ha-install-${DEPLOY_RUN_ID}.pid"
+  printf '%s\n' "$$" > "$NODE_INSTALL_PID_FILE"
+fi
+
+terminate_active_child() {
+  local attempt
+  [[ -n "$ACTIVE_CHILD_PID" ]] || return 0
+  if kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then
+    kill -TERM "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    for attempt in {1..10}; do
+      kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+  fi
+  ACTIVE_CHILD_PID=""
+}
+
+cleanup_node_install() {
+  local status=$?
+  trap - INT TERM EXIT
+  terminate_active_child
+  [[ -z "$NODE_INSTALL_PID_FILE" ]] || rm -f "$NODE_INSTALL_PID_FILE"
+  exit "$status"
+}
+
+interrupt_node_install() {
+  log "installation interrupted; terminating active node process"
+  terminate_active_child
+  exit 130
+}
+
+trap interrupt_node_install INT TERM
+trap cleanup_node_install EXIT
 
 is_true() {
   [[ "${1,,}" == "true" || "$1" == "1" || "${1,,}" == "yes" || "${1,,}" == "on" ]]
@@ -34,13 +91,17 @@ run_with_heartbeat() {
   log "${label} start"
   "$@" &
   local pid=$!
+  ACTIVE_CHILD_PID="$pid"
   while kill -0 "$pid" >/dev/null 2>&1; do
-    sleep 30
+    sleep 5
     if kill -0 "$pid" >/dev/null 2>&1; then
-      log "${label} still running, pid=$pid"
+      if (( SECONDS % 30 < 5 )); then
+        log "${label} still running, pid=$pid"
+      fi
     fi
   done
   wait "$pid"
+  ACTIVE_CHILD_PID=""
   log "${label} finished"
 }
 
@@ -71,7 +132,10 @@ install_prereqs() {
     fi
   elif command -v apt-get >/dev/null 2>&1; then
     if is_true "$IS_POSTGRESQL_NODE"; then
-      pkg_install gcc make bison flex libreadline-dev zlib1g-dev libssl-dev uuid-dev libicu-dev perl tar gzip python3 python3-dev python3-pip python3-venv sudo chrony acl
+      local -a prereq_pkgs
+      # shellcheck disable=SC2207
+      prereq_pkgs=($(postgresql_apt_prereq_packages))
+      pkg_install "${prereq_pkgs[@]}"
     else
       pkg_install tar gzip sudo chrony
     fi
@@ -300,6 +364,7 @@ install_postgres() {
   tar -xzf "$tgz" -C "$build_dir" --strip-components=1
   # shellcheck disable=SC2206
   local configure_options=( $PG_CONFIGURE_OPTIONS )
+  precheck_postgresql_build_dependencies
   (
     cd "$build_dir"
     run_with_heartbeat "PostgreSQL configure" ./configure --prefix="$PG_PREFIX" "${configure_options[@]}"
@@ -878,7 +943,7 @@ main() {
   log "node $MY_NAME ($MY_IP) installed"
 }
 
-if [[ "${1:-}" == "--init-pg-probackup" ]]; then
+if [[ "${INIT_PG_PROBACKUP_ONLY:-false}" == "true" ]]; then
   is_true "$IS_POSTGRESQL_NODE" || die "current node $MY_IP has no PostgreSQL role"
   initialize_pg_probackup_instance
   exit 0

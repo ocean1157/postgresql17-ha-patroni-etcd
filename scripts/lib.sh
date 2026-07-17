@@ -942,11 +942,6 @@ gcc
 make
 bison
 flex
-readline-devel
-zlib-devel
-openssl-devel
-libuuid-devel
-libicu-devel
 perl
 tar
 gzip
@@ -969,6 +964,120 @@ EOF
       printf '%s\n' python3 python3-devel python3-pip
       ;;
   esac
+  postgresql_configure_rpm_packages
+}
+
+configure_option_enabled() {
+  local expected="$1" option
+  # configure_options is intentionally a shell-style, whitespace-separated
+  # list. Options supported here do not contain embedded whitespace.
+  for option in $PG_CONFIGURE_OPTIONS; do
+    [[ "$option" == "$expected" || "$option" == "$expected="* ]] && return 0
+  done
+  return 1
+}
+
+configure_option_disabled() {
+  local feature="$1"
+  configure_option_enabled "--without-${feature}"
+}
+
+postgresql_configure_rpm_packages() {
+  configure_option_enabled --with-openssl && printf '%s\n' openssl-devel
+  configure_option_enabled --with-ssl && printf '%s\n' openssl-devel
+  configure_option_disabled zlib || printf '%s\n' zlib-devel
+  configure_option_disabled icu || printf '%s\n' libicu-devel
+  configure_option_disabled readline || printf '%s\n' readline-devel
+  if configure_option_enabled --with-uuid=ossp; then
+    printf '%s\n' uuid-devel
+  elif configure_option_enabled --with-uuid; then
+    printf '%s\n' libuuid-devel
+  fi
+  configure_option_enabled --with-python && printf '%s\n' python3-devel
+  configure_option_enabled --with-lz4 && printf '%s\n' lz4-devel
+  configure_option_enabled --with-zstd && printf '%s\n' libzstd-devel
+  configure_option_enabled --with-libxml && printf '%s\n' libxml2-devel
+  configure_option_enabled --with-libxslt && printf '%s\n' libxslt-devel
+  configure_option_enabled --with-ldap && printf '%s\n' openldap-devel
+  configure_option_enabled --with-pam && printf '%s\n' pam-devel
+  configure_option_enabled --with-systemd && printf '%s\n' systemd-devel
+  configure_option_enabled --with-selinux && printf '%s\n' libselinux-devel
+  configure_option_enabled --with-gssapi && printf '%s\n' krb5-devel
+  configure_option_enabled --with-llvm && printf '%s\n' llvm-devel clang-devel
+  configure_option_enabled --with-tcl && printf '%s\n' tcl-devel
+  configure_option_enabled --with-perl && printf '%s\n' perl-ExtUtils-Embed
+  configure_option_enabled --with-bonjour && printf '%s\n' avahi-devel
+  configure_option_enabled --enable-nls && printf '%s\n' gettext-devel
+  return 0
+}
+
+postgresql_apt_prereq_packages() {
+  cat <<'EOF'
+gcc
+make
+bison
+flex
+perl
+tar
+gzip
+python3
+python3-pip
+python3-venv
+sudo
+chrony
+acl
+EOF
+  configure_option_enabled --with-openssl && printf '%s\n' libssl-dev
+  configure_option_enabled --with-ssl && printf '%s\n' libssl-dev
+  configure_option_disabled zlib || printf '%s\n' zlib1g-dev
+  configure_option_disabled icu || printf '%s\n' libicu-dev
+  configure_option_disabled readline || printf '%s\n' libreadline-dev
+  if configure_option_enabled --with-uuid=ossp; then
+    printf '%s\n' libossp-uuid-dev
+  elif configure_option_enabled --with-uuid; then
+    printf '%s\n' uuid-dev
+  fi
+  configure_option_enabled --with-python && printf '%s\n' python3-dev
+  configure_option_enabled --with-lz4 && printf '%s\n' liblz4-dev
+  configure_option_enabled --with-zstd && printf '%s\n' libzstd-dev
+  configure_option_enabled --with-libxml && printf '%s\n' libxml2-dev
+  configure_option_enabled --with-libxslt && printf '%s\n' libxslt1-dev
+  configure_option_enabled --with-ldap && printf '%s\n' libldap2-dev
+  configure_option_enabled --with-pam && printf '%s\n' libpam0g-dev
+  configure_option_enabled --with-systemd && printf '%s\n' libsystemd-dev
+  configure_option_enabled --with-selinux && printf '%s\n' libselinux1-dev
+  configure_option_enabled --with-gssapi && printf '%s\n' libkrb5-dev
+  configure_option_enabled --with-llvm && printf '%s\n' llvm-dev clang
+  configure_option_enabled --with-tcl && printf '%s\n' tcl-dev
+  configure_option_enabled --with-perl && printf '%s\n' libperl-dev
+  configure_option_enabled --with-bonjour && printf '%s\n' libavahi-client-dev
+  configure_option_enabled --enable-nls && printf '%s\n' gettext
+  return 0
+}
+
+precheck_postgresql_build_dependencies() {
+  local pkg
+  local -a required=() missing=()
+  if command -v rpm >/dev/null 2>&1; then
+    # shellcheck disable=SC2207
+    required=($(rpm_prereq_packages))
+    for pkg in "${required[@]}"; do
+      rpm -q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    done
+  elif command -v dpkg-query >/dev/null 2>&1; then
+    # shellcheck disable=SC2207
+    required=($(postgresql_apt_prereq_packages))
+    for pkg in "${required[@]}"; do
+      dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q '^install ok installed$' || missing+=("$pkg")
+    done
+  else
+    die "cannot precheck PostgreSQL build dependencies: neither rpm nor dpkg-query is available"
+  fi
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    die "PostgreSQL build dependency precheck failed for configure_options='$PG_CONFIGURE_OPTIONS'. Missing packages: ${missing[*]}. Install them or remove the corresponding --with-* options"
+  fi
+  log "PostgreSQL build dependency precheck passed for configure_options='$PG_CONFIGURE_OPTIONS'"
 }
 
 rpm_etcd_prereq_packages() {
