@@ -65,6 +65,12 @@ nodes="node1:10.0.0.1,node2:10.0.0.2"
 4. 启动配置中的全部 Patroni 节点，并等待 Patroni 集群出现 Leader 和 streaming Replica。
 5. 按节点角色分别校验 `etcd.service` 或 `patroni.service` 为 enabled/active。
 
+启动 Patroni 前，安装脚本会在与 systemd 单元相同的 `PATH` 和
+`LD_LIBRARY_PATH` 环境中检查 `postgres`、`initdb`、`pg_ctl`、`pg_config`
+和 `psql` 的动态库，并实际执行 `initdb --version`。若存在 `libpq.so`
+等动态库缺失或安装版本与 `[postgresql].version` 不一致，部署会在启动
+Patroni 前直接失败并输出具体文件，避免进入 bootstrap 失败和自动重启循环。
+
 ## 生产部署建议
 
 - 不建议关闭防火墙和 SELinux。脚本仅提示端口要求，默认不关闭安全机制。

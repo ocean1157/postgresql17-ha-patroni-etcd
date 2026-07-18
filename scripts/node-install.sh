@@ -378,6 +378,31 @@ install_postgres() {
   chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PREFIX"
 }
 
+precheck_postgresql_runtime() {
+  local binary missing version_output actual_version
+  local runtime_library_path="${PG_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  local -a required_binaries=(postgres initdb pg_ctl pg_config psql)
+
+  log "precheck PostgreSQL runtime binaries and shared libraries"
+  for binary in "${required_binaries[@]}"; do
+    [[ -x "$PG_PREFIX/bin/$binary" ]] || die "PostgreSQL runtime precheck failed: missing executable $PG_PREFIX/bin/$binary"
+    if command -v ldd >/dev/null 2>&1; then
+      missing="$(env LD_LIBRARY_PATH="$runtime_library_path" ldd "$PG_PREFIX/bin/$binary" 2>/dev/null | awk '/not found/ {print $1}' | sort -u | tr '\n' ' ')"
+      [[ -z "$missing" ]] || die "PostgreSQL runtime precheck failed for $PG_PREFIX/bin/$binary: shared libraries not found: $missing. Expected PostgreSQL libraries under $PG_PREFIX/lib"
+    fi
+  done
+
+  if ! version_output="$(sudo -u "$POSTGRES_OS_USER" env \
+      PATH="$PG_PREFIX/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin" \
+      LD_LIBRARY_PATH="$runtime_library_path" \
+      "$PG_PREFIX/bin/initdb" --version 2>&1)"; then
+    die "PostgreSQL runtime precheck failed: initdb cannot run in the Patroni service environment: $version_output"
+  fi
+  actual_version="${version_output##* }"
+  [[ "$actual_version" == "$POSTGRES_VERSION" ]] || die "PostgreSQL runtime version mismatch: config requests $POSTGRES_VERSION but $PG_PREFIX/bin/initdb reports $actual_version. Use a matching prefix or remove the stale installation before rerunning"
+  log "PostgreSQL runtime precheck passed: $version_output"
+}
+
 install_etcd() {
   if [[ -x "$ETCD_BIN_DIR/etcd" && -x "$ETCD_BIN_DIR/etcdctl" && -x "$ETCD_BIN_DIR/etcdutl" ]]; then
     log "etcd already installed at $ETCD_BIN_DIR"
@@ -872,6 +897,7 @@ Type=simple
 User=${POSTGRES_OS_USER}
 Group=${POSTGRES_OS_USER}
 Environment=PATH=${PG_PREFIX}/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=LD_LIBRARY_PATH=${PG_PREFIX}/lib
 ExecStart=${PATRONI_BIN} ${PATRONI_HOME}/patroni.yml
 Restart=on-failure
 RestartSec=5
@@ -927,6 +953,7 @@ main() {
     write_pgpass
     write_postgres_env
     install_postgres
+    precheck_postgresql_runtime
     install_pg_cron
     install_pg_repack
     install_pg_probackup
