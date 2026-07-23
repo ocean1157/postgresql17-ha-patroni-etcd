@@ -47,8 +47,9 @@ require_files() {
 
 prepare_repo_options() {
   DOWNLOAD_REPO_OPTS=()
-  [[ -n "$YUM_SOURCE" ]] || return 0
-  if [[ "$YUM_SOURCE" == *.repo || "$YUM_SOURCE" == *.repo\?* ]]; then
+  if [[ -z "$YUM_SOURCE" ]]; then
+    :
+  elif [[ "$YUM_SOURCE" == *.repo || "$YUM_SOURCE" == *.repo\?* ]]; then
     mkdir -p "$DOWNLOAD_REPO_DIR"
     local repo_file="$DOWNLOAD_REPO_DIR/cluster.repo"
     if is_url "$YUM_SOURCE"; then
@@ -124,11 +125,50 @@ write_rpm_repo_metadata() {
   [[ -f "$RPM_DIR/repodata/repomd.xml" ]] || die "failed to create $RPM_DIR/repodata/repomd.xml"
 }
 
+verify_rpm_repo_installable() {
+  local manager="$1"
+  shift
+  local -a packages=("$@")
+  local repo_dir
+  repo_dir="$(mktemp -d /tmp/pg-ha-rpm-closure.XXXXXX)"
+  local install_root
+  install_root="$(mktemp -d /tmp/pg-ha-rpm-installroot.XXXXXX)"
+  local baseurl="file://$RPM_DIR"
+  cat > "$repo_dir/pg-ha-local.repo" <<EOF
+[pg-ha-local]
+name=pg-ha-local
+baseurl=$baseurl
+enabled=1
+gpgcheck=0
+EOF
+
+  log "verify local RPM repository in an empty installroot with online repositories disabled"
+  if "$manager" \
+      --installroot="$install_root" \
+      --releasever="$(current_os_major)" \
+      --setopt="reposdir=$repo_dir" \
+      --disablerepo='*' \
+      --enablerepo=pg-ha-local \
+      --setopt=tsflags=test \
+      --setopt=keepcache=0 \
+      --nogpgcheck \
+      install -y "${packages[@]}"; then
+    rm -rf "$repo_dir" "$install_root"
+    log "local RPM repository empty-installroot verification passed"
+    return 0
+  fi
+  rm -rf "$repo_dir" "$install_root"
+  die "local RPM repository cannot install the required packages into an empty root. The bundle has unresolved or missing dependencies; do not copy it offline"
+}
+
 download_rpms() {
   local manager
   local -a pkgs
   # shellcheck disable=SC2207
   pkgs=($(rpm_prereq_packages))
+  if [[ -n "$SSH_PASSWORD" && -z "$SSH_KEY" ]]; then
+    pkgs+=(sshpass)
+  fi
   prepare_repo_options
   manager="$(rpm_package_manager)" || die "RPM packages must be prepared on an online host with yum/dnf"
   log "[2/4] download yum/dnf RPM packages into $RPM_DIR"
@@ -152,6 +192,7 @@ download_rpms() {
 
   require_files "$RPM_DIR" "*.rpm" "RPM packages"
   write_rpm_repo_metadata
+  verify_rpm_repo_installable "$manager" "${pkgs[@]}"
 }
 
 download_python() {

@@ -960,10 +960,16 @@ acl
 EOF
   case "$compat" in
     el7)
-      printf '%s\n' python3 python3-devel python3-pip yum-utils
+      # EL7 provides /usr/bin/pkg-config from the package named "pkgconfig".
+      # Keep it explicit for complete offline development-package installs.
+      printf '%s\n' python3 python3-devel python3-pip yum-utils pkgconfig
       ;;
     el8)
-      printf '%s\n' python3 python3-devel python3-pip
+      # zlib-devel and several other development packages require the
+      # /usr/bin/pkg-config capability on EL8.  Keep its provider as an
+      # explicit root package so an offline bundle remains usable even when
+      # the preparation host already has pkg-config installed.
+      printf '%s\n' python3 python3-devel python3-pip pkgconf-pkg-config
       ;;
     *)
       printf '%s\n' python3 python3-devel python3-pip
