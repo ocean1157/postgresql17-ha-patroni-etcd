@@ -169,7 +169,11 @@ download_rpms() {
   local -a pkgs
   # shellcheck disable=SC2207
   pkgs=($(rpm_prereq_packages))
-  if [[ -n "$SSH_PASSWORD" && -z "$SSH_KEY" ]]; then
+  # If no private key is configured, password authentication is the only
+  # supported bootstrap path. Include sshpass even when ssh_password is left
+  # blank on the online preparation host and filled only after the bundle is
+  # moved into the deployment environment.
+  if [[ -z "$SSH_KEY" ]]; then
     pkgs+=(sshpass)
   fi
   prepare_repo_options

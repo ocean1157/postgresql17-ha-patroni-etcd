@@ -113,6 +113,18 @@ copy_project() {
     -czf - . | "${ssh_base[@]}" "${SSH_USER}@${ip}" "tar -C '$INSTALL_ROOT' -xzf -"
 }
 
+ensure_local_distribution_tools() {
+  local -a missing=()
+  command -v tar >/dev/null 2>&1 || missing+=(tar)
+  command -v gzip >/dev/null 2>&1 || missing+=(gzip)
+  if ((${#missing[@]} > 0)); then
+    log "部署发起节点缺少项目分发工具，安装：${missing[*]}"
+    pkg_install "${missing[@]}"
+  fi
+  command -v tar >/dev/null 2>&1 || die "tar is required on the deployment host to distribute the project"
+  command -v gzip >/dev/null 2>&1 || die "gzip is required on the deployment host to distribute the project"
+}
+
 install_node() {
   local ip="$1" remote_project_dir
   remote_project_dir="$(node_project_dir "$ip")"
@@ -126,7 +138,7 @@ install_node() {
     POSTGRESQL_CONF_MAX_WORKER_PROCESSES='$PGCONF_MAX_WORKER_PROCESSES' \
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS='$PGCONF_MAX_PARALLEL_WORKERS' \
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER='$PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER' \
-    SKIP_SERVICE_START=1 setsid bash scripts/node-install.sh --deploy-run-id '$DEPLOY_RUN_ID'"
+    SKIP_SERVICE_START=1 setsid --wait bash scripts/node-install.sh --deploy-run-id '$DEPLOY_RUN_ID'"
 }
 
 enable_etcd_unit() {
@@ -442,6 +454,7 @@ main() {
   # shellcheck disable=SC2207
   etcd_ips=($(etcd_node_ips))
 
+  ensure_local_distribution_tools
   run_parallel_phase "分发项目" copy_project "${node_ips[@]}"
   run_parallel_phase "安装节点" install_node "${node_ips[@]}"
   run_parallel_phase "校验 etcd 安装文件" verify_etcd_install_node "${etcd_ips[@]}"
