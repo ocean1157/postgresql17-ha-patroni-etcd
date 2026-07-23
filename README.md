@@ -107,5 +107,8 @@ Python 版本的联网环境执行，然后整体打包 `packages/` 搬到离线
 部署时请通过本地仓库安装 RPM，不要使用 `rpm -ivh *.rpm`，因为后者不会自动解析和安装依赖。
 EL8 清单会显式包含 `pkgconf-pkg-config` 和 `annobin`，以覆盖 `/usr/bin/pkg-config` 以及
 `system-rpm-config` 的 `(annobin if gcc)` 条件依赖；EL7 使用对应的 `pkgconfig` 包。
+EL8 的 AppStream 中部分 Perl/Python RPM 带有模块标签。离线目录使用 `createrepo_c`
+生成普通仓库后不包含原始 ModuleMD，因此下载校验和部署生成的本地仓库会设置
+`module_hotfixes=1`，允许使用已按相同 EL8 环境解析并下载的模块 RPM。EL7 不设置该选项。
 
 部署安装时默认 `offline_install="auto"`：优先使用 yum/dnf 和 pip 在线源，在线源不可用时才回退到 `packages/rpm` 和 `packages/python`。设置 `[repository] offline_install="true"` 后强制离线安装；设置为 `"false"` 后只使用在线源，不回退本地包。

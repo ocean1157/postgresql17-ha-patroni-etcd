@@ -134,12 +134,15 @@ verify_rpm_repo_installable() {
   local install_root
   install_root="$(mktemp -d /tmp/pg-ha-rpm-installroot.XXXXXX)"
   local baseurl="file://$RPM_DIR"
+  local module_hotfixes=""
+  [[ "$OS_COMPAT" == "el8" ]] && module_hotfixes="module_hotfixes=1"
   cat > "$repo_dir/pg-ha-local.repo" <<EOF
 [pg-ha-local]
 name=pg-ha-local
 baseurl=$baseurl
 enabled=1
 gpgcheck=0
+$module_hotfixes
 EOF
 
   log "verify local RPM repository in an empty installroot with online repositories disabled"

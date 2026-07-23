@@ -896,6 +896,8 @@ rpm_repo_install() {
     assert_offline_environment_matches "$rpm_dir"
     log "using packages/rpm local repository with online repositories disabled: $*"
     local local_repo_dir="/tmp/pg-ha-local-rpm-repo"
+    local module_hotfixes=""
+    [[ "$(current_os_compat_id)" == "el8" ]] && module_hotfixes="module_hotfixes=1"
     rm -rf "$local_repo_dir"
     mkdir -p "$local_repo_dir"
     cat > "$local_repo_dir/pg-ha-local.repo" <<EOF
@@ -904,6 +906,7 @@ name=pg-ha-local
 baseurl=file://$rpm_dir
 enabled=1
 gpgcheck=0
+$module_hotfixes
 EOF
     "$manager" \
       --disablerepo='*' \
