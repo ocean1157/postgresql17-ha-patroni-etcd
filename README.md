@@ -115,5 +115,10 @@ EL8 清单会显式包含 `pkgconf-pkg-config` 和 `annobin`，以覆盖 `/usr/b
 EL8 的 AppStream 中部分 Perl/Python RPM 带有模块标签。离线目录使用 `createrepo_c`
 生成普通仓库后不包含原始 ModuleMD，因此下载校验和部署生成的本地仓库会设置
 `module_hotfixes=1`，允许使用已按相同 EL8 环境解析并下载的模块 RPM。EL7 不设置该选项。
+节点依赖检查同时支持包名和 RPM capability；例如 Anolis 8 安装包名为 `python36`、
+但提供 `python3` capability 时，会被正确识别为依赖已满足，不会因精确包名不同而误报。
+由于部分 EL8 模块包只允许 DNF 用 `python3` 规格解析到 `python36`，但 RPM 本身未必声明
+同名 capability，Python 依赖进一步按实际功能检查：`python3 --version`、`python3 -m pip`
+以及 `python3-config`/`Python.h`。这避免模块包已安装但仍被包名检查误判。
 
 部署安装时默认 `offline_install="auto"`：优先使用 yum/dnf 和 pip 在线源，在线源不可用时才回退到 `packages/rpm` 和 `packages/python`。设置 `[repository] offline_install="true"` 后强制离线安装；设置为 `"false"` 后只使用在线源，不回退本地包。

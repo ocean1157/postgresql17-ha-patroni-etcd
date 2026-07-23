@@ -117,7 +117,7 @@ install_prereqs() {
       prereq_pkgs=($(rpm_etcd_prereq_packages))
     fi
     for pkg in "${prereq_pkgs[@]}"; do
-      if ! rpm -q "$pkg" >/dev/null 2>&1; then
+      if ! rpm_requirement_installed "$pkg"; then
         missing_pkgs+=("$pkg")
         missing_count=$((missing_count + 1))
       fi

@@ -689,6 +689,32 @@ rpm_package_manager() {
   return 1
 }
 
+rpm_requirement_installed() {
+  local requirement="$1"
+  case "$requirement" in
+    python3)
+      command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1
+      return
+      ;;
+    python3-pip)
+      command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1
+      return
+      ;;
+    python3-devel)
+      if command -v python3-config >/dev/null 2>&1 \
+        && compgen -G '/usr/include/python3*/Python.h' >/dev/null; then
+        return 0
+      fi
+      rpm -q python3-devel >/dev/null 2>&1 \
+        || rpm -q python36-devel >/dev/null 2>&1 \
+        || rpm -q --whatprovides '*/Python.h' >/dev/null 2>&1
+      return
+      ;;
+  esac
+  rpm -q "$requirement" >/dev/null 2>&1 \
+    || rpm -q --whatprovides "$requirement" >/dev/null 2>&1
+}
+
 current_python_tag() {
   python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])' 2>/dev/null || printf 'unknown\n'
 }
@@ -1081,7 +1107,7 @@ precheck_postgresql_build_dependencies() {
     # shellcheck disable=SC2207
     required=($(rpm_prereq_packages))
     for pkg in "${required[@]}"; do
-      rpm -q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+      rpm_requirement_installed "$pkg" || missing+=("$pkg")
     done
   elif command -v dpkg-query >/dev/null 2>&1; then
     # shellcheck disable=SC2207
