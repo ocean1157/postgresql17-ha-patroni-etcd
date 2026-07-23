@@ -969,7 +969,12 @@ EOF
       # /usr/bin/pkg-config capability on EL8.  Keep its provider as an
       # explicit root package so an offline bundle remains usable even when
       # the preparation host already has pkg-config installed.
-      printf '%s\n' python3 python3-devel python3-pip pkgconf-pkg-config
+      #
+      # Anolis/RHEL 8 rpm configuration packages also use the rich dependency
+      # "(annobin if gcc)".  dnf download --resolve can miss that provider
+      # when gcc and system-rpm-config are resolved together, so keep annobin
+      # as an explicit offline root package.
+      printf '%s\n' python3 python3-devel python3-pip pkgconf-pkg-config annobin
       ;;
     *)
       printf '%s\n' python3 python3-devel python3-pip

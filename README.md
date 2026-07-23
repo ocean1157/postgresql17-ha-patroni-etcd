@@ -105,5 +105,7 @@ Python 版本的联网环境执行，然后整体打包 `packages/` 搬到离线
 禁用所有在线源，只使用刚生成的本地仓库执行模拟安装事务。该检查不读取制包机已安装包，
 所以 `/usr/bin/pkg-config` 等依赖不能被宿主机环境掩盖。检查失败时禁止生成可交付离线包。
 部署时请通过本地仓库安装 RPM，不要使用 `rpm -ivh *.rpm`，因为后者不会自动解析和安装依赖。
+EL8 清单会显式包含 `pkgconf-pkg-config` 和 `annobin`，以覆盖 `/usr/bin/pkg-config` 以及
+`system-rpm-config` 的 `(annobin if gcc)` 条件依赖；EL7 使用对应的 `pkgconfig` 包。
 
 部署安装时默认 `offline_install="auto"`：优先使用 yum/dnf 和 pip 在线源，在线源不可用时才回退到 `packages/rpm` 和 `packages/python`。设置 `[repository] offline_install="true"` 后强制离线安装；设置为 `"false"` 后只使用在线源，不回退本地包。
