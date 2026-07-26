@@ -130,6 +130,13 @@ install_node() {
   remote_project_dir="$(node_project_dir "$ip")"
   log "install node $ip"
   run_remote_retry "$ip" "cd '$remote_project_dir' && \
+    run_with_compatible_setsid() { \
+      if setsid --help 2>&1 | grep -q -- '--wait'; then \
+        setsid --wait \"\$@\"; \
+      else \
+        setsid \"\$@\"; \
+      fi; \
+    }; \
     PG_HARDWARE_DEFAULTS_RESOLVED=true \
     POSTGRESQL_CONF_SHARED_BUFFERS='$PGCONF_SHARED_BUFFERS' \
     POSTGRESQL_CONF_EFFECTIVE_CACHE_SIZE='$PGCONF_EFFECTIVE_CACHE_SIZE' \
@@ -138,7 +145,7 @@ install_node() {
     POSTGRESQL_CONF_MAX_WORKER_PROCESSES='$PGCONF_MAX_WORKER_PROCESSES' \
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS='$PGCONF_MAX_PARALLEL_WORKERS' \
     POSTGRESQL_CONF_MAX_PARALLEL_WORKERS_PER_GATHER='$PGCONF_MAX_PARALLEL_WORKERS_PER_GATHER' \
-    SKIP_SERVICE_START=1 setsid --wait bash scripts/node-install.sh --deploy-run-id '$DEPLOY_RUN_ID'"
+    SKIP_SERVICE_START=1 run_with_compatible_setsid bash scripts/node-install.sh --deploy-run-id '$DEPLOY_RUN_ID'"
 }
 
 enable_etcd_unit() {
