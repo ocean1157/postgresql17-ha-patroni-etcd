@@ -12,7 +12,7 @@ load_config
 ENDPOINTS="$(etcd_client_endpoints)"
 
 echo "== etcd endpoint health =="
-env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 "$ETCD_BIN_DIR/etcdctl" --endpoints="$ENDPOINTS" endpoint health || true
+env -u ETCDCTL_ENDPOINTS -u ETCDCTL_API "$ETCD_BIN_DIR/etcdctl" --endpoints="$ENDPOINTS" endpoint health || true
 
 echo
 echo "== patroni cluster =="

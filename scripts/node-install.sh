@@ -422,8 +422,26 @@ install_etcd() {
 }
 
 install_pg_probackup() {
-  if [[ -x "$PG_PROBACKUP_BINARY" ]]; then
-    log "pg_probackup already installed at $PG_PROBACKUP_BINARY"
+  local installed_binary="$PG_PREFIX/bin/pg_probackup"
+
+  link_pg_probackup_binary() {
+    [[ -x "$installed_binary" ]] ||
+      die "pg_probackup installation target is missing or not executable: $installed_binary"
+    if [[ "$PG_PROBACKUP_BINARY" == "$installed_binary" ]]; then
+      log "pg_probackup installed directly at $installed_binary"
+      return 0
+    fi
+    mkdir -p "$(dirname "$PG_PROBACKUP_BINARY")"
+    ln -sfn "$installed_binary" "$PG_PROBACKUP_BINARY"
+    [[ -x "$PG_PROBACKUP_BINARY" ]] ||
+      die "failed to create pg_probackup link: $PG_PROBACKUP_BINARY -> $installed_binary"
+    log "pg_probackup link aligned: $PG_PROBACKUP_BINARY -> $installed_binary"
+  }
+
+  if [[ -x "$installed_binary" ]]; then
+    link_pg_probackup_binary
+    "$PG_PROBACKUP_BINARY" --version >/dev/null 2>&1 ||
+      die "pg_probackup exists but cannot run: $PG_PROBACKUP_BINARY"
     return 0
   fi
   local tgz="$PROJECT_DIR/packages/pg_probackup-${PG_PROBACKUP_VERSION}.tar.gz"
@@ -446,10 +464,10 @@ install_pg_probackup() {
     run_with_heartbeat "pg_probackup make" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir"
     run_with_heartbeat "pg_probackup make install" env PATH="$PG_PREFIX/bin:$PATH" make USE_PGXS=1 top_srcdir="$pg_src_dir" install
   )
-  local installed_binary="$PG_PREFIX/bin/pg_probackup"
   [[ -x "$installed_binary" ]] || die "pg_probackup build did not produce $installed_binary"
-  mkdir -p "$(dirname "$PG_PROBACKUP_BINARY")"
-  ln -sf "$installed_binary" "$PG_PROBACKUP_BINARY"
+  link_pg_probackup_binary
+  "$PG_PROBACKUP_BINARY" --version >/dev/null 2>&1 ||
+    die "new pg_probackup installation cannot run: $PG_PROBACKUP_BINARY"
 }
 
 install_pg_cron() {
@@ -777,7 +795,11 @@ EOF
 }
 
 configure_pg_probackup() {
-  log "configure pg_probackup cron"
+  log "configure pg_probackup and PostgreSQL log cleanup cron"
+  local pg_home log_cleanup_script
+  pg_home="$(getent passwd "$POSTGRES_OS_USER" | cut -d: -f6)"
+  [[ -n "$pg_home" ]] || pg_home="/home/${POSTGRES_OS_USER}"
+  log_cleanup_script="/usr/local/bin/pg_ha_log_cleanup.sh"
   mkdir -p "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR"
   chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$PG_PROBACKUP_BACKUP_DIR" "$PG_PROBACKUP_LOG_DIR"
 
@@ -792,8 +814,28 @@ export PGPORT=${POSTGRES_PORT}
 export PGDATABASE=${PGDATABASE}
 export PGUSER=${PG_PROBACKUP_BACKUP_USER}
 export PGHOST=/var/run/postgresql
-export PATH=${PG_PREFIX}/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH
-export LD_LIBRARY_PATH=${PG_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
+
+# Only PG variables are allowed to override these defaults.
+PG_ENV_FILE=${pg_home}/.pgev
+if [[ -r "\$PG_ENV_FILE" ]]; then
+  while IFS= read -r PG_ENV_LINE || [[ -n "\$PG_ENV_LINE" ]]; do
+    PG_ENV_LINE="\${PG_ENV_LINE#"\${PG_ENV_LINE%%[![:space:]]*}"}"
+    PG_ENV_LINE="\${PG_ENV_LINE#export }"
+    case "\$PG_ENV_LINE" in
+      PGHOME=*|PGDATA=*|PGPORT=*|PGDATABASE=*|PGUSER=*|PGHOST=*|PGPASSFILE=*|PG_PROBACKUP=*|PG_PROBACKUP_BACKUP_DIR=*)
+        PG_ENV_NAME="\${PG_ENV_LINE%%=*}"
+        PG_ENV_VALUE="\${PG_ENV_LINE#*=}"
+        PG_ENV_VALUE="\${PG_ENV_VALUE%\"}"; PG_ENV_VALUE="\${PG_ENV_VALUE#\"}"
+        PG_ENV_VALUE="\${PG_ENV_VALUE%\'}"; PG_ENV_VALUE="\${PG_ENV_VALUE#\'}"
+        printf -v "\$PG_ENV_NAME" '%s' "\$PG_ENV_VALUE"
+        export "\$PG_ENV_NAME"
+        ;;
+    esac
+  done < "\$PG_ENV_FILE"
+fi
+
+export PATH="\$PGHOME/bin:${PATRONI_VENV}/bin:${PATRONI_BIN_DIR}:${ETCD_BIN_DIR}:$(dirname "$PG_PROBACKUP_BINARY"):\$PATH"
+export LD_LIBRARY_PATH="\$PGHOME/lib:\${LD_LIBRARY_PATH:-}"
 
 LOG_DIR=${PG_PROBACKUP_LOG_DIR}
 BACKUP_DIR=${PG_PROBACKUP_BACKUP_DIR}
@@ -802,9 +844,15 @@ FULL_DAY=${PG_PROBACKUP_FULL_BACKUP_DAY}
 INCREMENTAL_MODE=${PG_PROBACKUP_INCREMENTAL_MODE}
 REQUESTED_MODE="\${1:-}"
 BACKUP_USER=${PG_PROBACKUP_BACKUP_USER}
-PG_PROBACKUP_BIN=${PG_PROBACKUP_BINARY}
+PG_PROBACKUP_BIN=\${PG_PROBACKUP:-${PG_PROBACKUP_BINARY}}
+BACKUP_DIR=\${PG_PROBACKUP_BACKUP_DIR:-\$BACKUP_DIR}
 BACKUP_HOST=${PG_PROBACKUP_BACKUP_HOST}
 MEMBER_NAME=${MY_POSTGRESQL_NAME}
+
+CPU_COUNT="\$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)"
+[[ "\$CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || CPU_COUNT=1
+PARALLEL_JOBS=\$((CPU_COUNT / 2))
+(( PARALLEL_JOBS >= 1 )) || PARALLEL_JOBS=1
 
 mkdir -p "\$LOG_DIR"
 exec >>"\$LOG_DIR/pg_probackup-\$(date +%F).log" 2>&1
@@ -842,26 +890,64 @@ else
   echo "[\$(date '+%F %T')] valid FULL backup found, selected backup mode: \$BACKUP_MODE"
 fi
 
-echo "[\$(date '+%F %T')] run \$BACKUP_MODE backup"
-"\$PG_PROBACKUP_BIN" backup -B "\$BACKUP_DIR" --instance "\$INSTANCE" -b "\$BACKUP_MODE" -U "\$BACKUP_USER" -d ${PGDATABASE} --stream --delete-expired --delete-wal
+echo "[\$(date '+%F %T')] run \$BACKUP_MODE backup with \$PARALLEL_JOBS parallel jobs (cpu=\$CPU_COUNT)"
+"\$PG_PROBACKUP_BIN" backup -B "\$BACKUP_DIR" --instance "\$INSTANCE" -b "\$BACKUP_MODE" -U "\$BACKUP_USER" -d "\$PGDATABASE" -j "\$PARALLEL_JOBS" --stream --delete-expired --delete-wal
+# Expire old backup chains and archived WAL no longer needed by retained backups.
 "\$PG_PROBACKUP_BIN" delete -B "\$BACKUP_DIR" --instance "\$INSTANCE" --delete-expired --delete-wal
 echo "[\$(date '+%F %T')] pg_probackup job finished"
 EOF
   chmod 0755 "$PG_PROBACKUP_JOB_SCRIPT"
   chown root:root "$PG_PROBACKUP_JOB_SCRIPT"
 
-  local current_crontab backup_cron_line
+  cat >"$log_cleanup_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PGDATA=${PG_DATA}
+PG_ENV_FILE=${pg_home}/.pgev
+if [[ -r "\$PG_ENV_FILE" ]]; then
+  while IFS= read -r PG_ENV_LINE || [[ -n "\$PG_ENV_LINE" ]]; do
+    PG_ENV_LINE="\${PG_ENV_LINE#"\${PG_ENV_LINE%%[![:space:]]*}"}"
+    PG_ENV_LINE="\${PG_ENV_LINE#export }"
+    case "\$PG_ENV_LINE" in
+      PGDATA=*)
+        PGDATA="\${PG_ENV_LINE#*=}"
+        PGDATA="\${PGDATA%\"}"; PGDATA="\${PGDATA#\"}"
+        PGDATA="\${PGDATA%\'}"; PGDATA="\${PGDATA#\'}"
+        export PGDATA
+        ;;
+    esac
+  done < "\$PG_ENV_FILE"
+fi
+
+PG_LOG_DIRECTORY=${PGCONF_LOG_DIRECTORY}
+if [[ "\$PG_LOG_DIRECTORY" = /* ]]; then
+  LOG_DIR="\$PG_LOG_DIRECTORY"
+else
+  LOG_DIR="\$PGDATA/\$PG_LOG_DIRECTORY"
+fi
+[[ -n "\$LOG_DIR" && "\$LOG_DIR" != "/" ]] || { echo "unsafe PostgreSQL log directory: \$LOG_DIR" >&2; exit 1; }
+[[ -d "\$LOG_DIR" ]] || exit 0
+find "\$LOG_DIR" -type f -mtime +45 -delete
+EOF
+  chmod 0755 "$log_cleanup_script"
+  chown root:root "$log_cleanup_script"
+
+  local current_crontab backup_cron_line log_cleanup_cron_line
   backup_cron_line="${PG_PROBACKUP_CRON_MINUTE} ${PG_PROBACKUP_CRON_HOUR} * * * ${PG_PROBACKUP_JOB_SCRIPT}"
-  current_crontab="$(crontab -u "$POSTGRES_OS_USER" -l 2>/dev/null | grep -Fv "$PG_PROBACKUP_JOB_SCRIPT" || true)"
+  log_cleanup_cron_line="30 0 * * * ${log_cleanup_script}"
+  current_crontab="$(crontab -u "$POSTGRES_OS_USER" -l 2>/dev/null | grep -Fv "$PG_PROBACKUP_JOB_SCRIPT" | grep -Fv "$log_cleanup_script" || true)"
   if pg_probackup_cron_enabled_for_node "$MY_POSTGRESQL_NAME"; then
     {
       [[ -z "$current_crontab" ]] || printf '%s\n' "$current_crontab"
       printf '%s\n' "$backup_cron_line"
+      printf '%s\n' "$log_cleanup_cron_line"
     } | crontab -u "$POSTGRES_OS_USER" -
-  elif [[ -n "$current_crontab" ]]; then
-    printf '%s\n' "$current_crontab" | crontab -u "$POSTGRES_OS_USER" -
   else
-    crontab -u "$POSTGRES_OS_USER" -r 2>/dev/null || true
+    {
+      [[ -z "$current_crontab" ]] || printf '%s\n' "$current_crontab"
+      printf '%s\n' "$log_cleanup_cron_line"
+    } | crontab -u "$POSTGRES_OS_USER" -
   fi
   rm -f /etc/cron.d/pg-probackup-ha
   systemctl enable --now crond >/dev/null 2>&1 || true

@@ -211,7 +211,9 @@ changed with `patronictl edit-config` or by reinitializing the DCS state.
 - `full_backup_day="0"`：周日做全量备份，0 代表周日。
 - `incremental_mode="PAGE"`：非全量日做 PAGE 增量备份。
 
-备份脚本只会在当前 Patroni Leader 上执行，Replica 节点会自动跳过。首次运行如果没有发现有效历史备份，即使当天不是周日，也会自动切换为 FULL，避免第一次就执行增量失败。PostgreSQL 的 `archive_command` 使用 `pg_probackup archive-push` 归档 WAL，由脚本根据 `[pg_probackup] binary`、`backup_dir`、`instance` 自动生成，避免同一路径维护两次。
+备份脚本只会在当前 Patroni Leader 上执行，Replica 节点会自动跳过。首次运行如果没有发现有效历史备份，即使当天不是周日，也会自动切换为 FULL，避免第一次就执行增量失败。每次执行时，脚本仅从 PostgreSQL 用户的 `.pgev` 中读取白名单内的 PG 环境变量并覆盖安装时默认值，不会加载 Patroni、etcd、PATH 等其他环境。备份命令通过 `-j` 使用系统在线 CPU 核数的一半（向下取整，最少为 1）。定时任务在备份后执行 `delete --delete-expired --delete-wal`，清理超过保留策略且已不再需要的归档 WAL。PostgreSQL 的 `archive_command` 使用 `pg_probackup archive-push` 归档 WAL，由脚本根据 `[pg_probackup] binary`、`backup_dir`、`instance` 自动生成，避免同一路径维护两次。
+
+每个 PostgreSQL 节点还会安装 `/usr/local/bin/pg_ha_log_cleanup.sh`，并在每天 `00:30` 删除 PostgreSQL `log_directory` 中修改时间超过 45 天的普通日志文件。相对日志目录会按每次任务从 `.pgev` 读取到的 `PGDATA` 解析。
 
 ## etcd 日志路径
 

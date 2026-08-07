@@ -720,6 +720,20 @@ current_python_tag() {
 }
 
 ensure_python3_command() {
+  # Prefer the newest explicitly versioned interpreter installed from the OS
+  # repositories.  EL8 still exposes Python 3.6 as /usr/bin/python3, while
+  # current Patroni dependencies require a newer runtime.
+  local preferred_py preferred_path
+  for preferred_py in python3.12 python3.11 python3.10 python3.9 python3.8 python3.7; do
+    if command -v "$preferred_py" >/dev/null 2>&1 \
+      && "$preferred_py" -m pip --version >/dev/null 2>&1; then
+      preferred_path="$(command -v "$preferred_py")"
+      mkdir -p /usr/local/bin
+      ln -sfn "$preferred_path" /usr/local/bin/python3
+      break
+    fi
+  done
+
   if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
     return 0
   fi

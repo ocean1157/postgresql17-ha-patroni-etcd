@@ -244,6 +244,7 @@ check_path x '$PG_PREFIX/bin/pg_repack'
 check_path f '$PG_PREFIX/share/extension/pg_repack.control'
 check_path x '$PG_PROBACKUP_BINARY'
 check_path x '$PG_PROBACKUP_JOB_SCRIPT'
+check_path x /usr/local/bin/pg_ha_log_cleanup.sh
 check_path d '$PATRONI_LOG_DIR'
 check_path d '$PG_PROBACKUP_LOG_DIR'
 check_path f /etc/systemd/system/patroni.service
@@ -253,6 +254,12 @@ elif [[ '$cron_expected' != 'true' ]] && ! crontab -u '$POSTGRES_OS_USER' -l 2>/
   echo 'OK postgres crontab is disabled by backup_host=$PG_PROBACKUP_BACKUP_HOST'
 else
   echo 'INVALID postgres crontab for backup_host=$PG_PROBACKUP_BACKUP_HOST'
+  failed=1
+fi
+if crontab -u '$POSTGRES_OS_USER' -l 2>/dev/null | grep -Fq '30 0 * * * /usr/local/bin/pg_ha_log_cleanup.sh'; then
+  echo 'OK postgres log cleanup crontab'
+else
+  echo 'INVALID postgres log cleanup crontab'
   failed=1
 fi
 exit \"\$failed\""
@@ -466,12 +473,16 @@ main() {
   run_parallel_phase "安装节点" install_node "${node_ips[@]}"
   run_parallel_phase "校验 etcd 安装文件" verify_etcd_install_node "${etcd_ips[@]}"
   run_parallel_phase "校验 PostgreSQL/Patroni 安装文件" verify_patroni_install_node "${pg_ips[@]}"
+  if [[ "${PREPARE_ONLY:-0}" == "1" ]]; then
+    log "prepare-only deployment completed; services were not enabled or started"
+    return 0
+  fi
   run_parallel_phase "启用 etcd systemd 单元" enable_etcd_unit "${etcd_ips[@]}"
   run_parallel_phase "启用 Patroni systemd 单元" enable_patroni_unit "${pg_ips[@]}"
   run_parallel_phase "启动 etcd" start_etcd_node "${etcd_ips[@]}"
 
   log "wait for etcd health"
-  run_remote_retry "$(primary_etcd_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS ETCDCTL_API=3 '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; tail -n 120 '$ETCD_LOG_DIR/etcd.log' 2>/dev/null || systemctl status etcd.service --no-pager; exit 1"
+  run_remote_retry "$(primary_etcd_ip)" "test -x '$ETCD_BIN_DIR/etcdctl' && for i in {1..90}; do env -u ETCDCTL_ENDPOINTS -u ETCDCTL_API '$ETCD_BIN_DIR/etcdctl' --endpoints=$(etcd_client_endpoints) endpoint health && exit 0; sleep 2; done; tail -n 120 '$ETCD_LOG_DIR/etcd.log' 2>/dev/null || systemctl status etcd.service --no-pager; exit 1"
 
   run_parallel_phase "启动 patroni" start_patroni_node "${pg_ips[@]}"
 
