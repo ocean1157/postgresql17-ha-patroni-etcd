@@ -260,6 +260,12 @@ prepare_pgdata_parent() {
 create_users_dirs() {
   log "create directories for node roles: postgresql=$IS_POSTGRESQL_NODE etcd=$IS_ETCD_NODE"
   id "$POSTGRES_OS_USER" >/dev/null 2>&1 || useradd -m -U "$POSTGRES_OS_USER"
+  local postgres_home
+  postgres_home="$(getent passwd "$POSTGRES_OS_USER" | cut -d: -f6)"
+  if [[ -n "$postgres_home" && -d "$postgres_home" ]]; then
+    chown "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$postgres_home"
+    chmod u+rwx "$postgres_home"
+  fi
   if is_true "$IS_ETCD_NODE"; then
     mkdir -p "$ETCD_DATA" "$ETCD_LOG_DIR" "$ETCD_BIN_DIR"
     chown -R "$POSTGRES_OS_USER:$POSTGRES_OS_USER" "$ETCD_DATA" "$ETCD_LOG_DIR" "$ETCD_BIN_DIR"
@@ -768,13 +774,13 @@ postgresql:
   authentication:
     superuser:
       username: ${POSTGRES_SUPERUSER}
-      password: ${POSTGRES_SUPERPASS}
+      password: '${POSTGRES_SUPERPASS}'
     replication:
       username: ${REPLICATION_USER}
-      password: ${REPLICATION_PASS}
+      password: '${REPLICATION_PASS}'
     rewind:
       username: ${REWIND_USER}
-      password: ${REWIND_PASS}
+      password: '${REWIND_PASS}'
   callbacks:
     on_start: ${PATRONI_HOME}/vip_callback.sh
     on_stop: ${PATRONI_HOME}/vip_callback.sh

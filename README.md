@@ -82,6 +82,7 @@ Patroni 前直接失败并输出具体文件，避免进入 bootstrap 失败和�
 - etcd 使用 v3 API，不启用旧文档中的 `enable-v2`。
 - systemd 设置 `Restart=on-failure`、`LimitNOFILE` 和服务依赖，避免早期 `Restart=no` 导致进程异常后无人拉起。
 - PostgreSQL 参数集中进入 Patroni `bootstrap.dcs.postgresql.parameters`，不要手工分别改每个节点。
+- HBA 规则集中配置在 `cluster.env` 的 `[patroni.hba].rules`。多条规则以英文分号分隔；可使用 `{node_ip}`、`{superuser}`、`{replication_user}`、`{rewind_user}` 占位符。部署时同一组规则会同时写入 `patroni.yml` 的 `bootstrap.pg_hba`，并在集群启动后写入 Patroni DCS 动态配置。
 - VIP sudo 权限最小化，只允许 `ip` 和 `arping`。
 - 备份建议接入 pgBackRest 或企业备份平台；本项目只提供 HA 部署和基础巡检，不把裸 `find -exec rm -rf` 清理策略作为默认项。
 

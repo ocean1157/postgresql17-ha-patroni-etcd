@@ -96,6 +96,7 @@ validate_required_config() {
     PG_PROBACKUP_INCREMENTAL_MODE PG_PROBACKUP_BACKUP_USER
     PG_CRON_VERSION PG_REPACK_VERSION
     PATRONI_VERSION PATRONI_PORT PATRONI_HOME PATRONI_LOG_DIR PATRONI_VENV PATRONI_BIN_DIR
+    PATRONI_HBA_RULES
     PATRONI_DCS_TTL PATRONI_DCS_LOOP_WAIT PATRONI_DCS_RETRY_TIMEOUT
     PATRONI_DCS_MAXIMUM_LAG_ON_FAILOVER PATRONI_DCS_USE_PG_REWIND PATRONI_DCS_USE_SLOTS
     PATRONI_SYNC_SYNCHRONOUS_MODE PATRONI_SYNC_SYNCHRONOUS_MODE_STRICT
@@ -152,6 +153,32 @@ validate_config_values() {
   [[ "$PG_PROBACKUP_FULL_BACKUP_DAY" =~ ^[0-9]+$ ]] && (( 10#$PG_PROBACKUP_FULL_BACKUP_DAY <= 6 )) || die "config [pg_probackup].full_backup_day must be an integer from 0 to 6"
   for value in "$PATRONI_DCS_TTL" "$PATRONI_DCS_LOOP_WAIT" "$PATRONI_DCS_RETRY_TIMEOUT" "$PATRONI_DCS_MAXIMUM_LAG_ON_FAILOVER" "$PATRONI_SYNC_SYNCHRONOUS_NODE_COUNT"; do
     [[ "$value" =~ ^[0-9]+$ ]] || die "Patroni numeric config values must be non-negative integers; got '$value'"
+  done
+  validate_patroni_hba_rules
+}
+
+validate_patroni_hba_rules() {
+  local raw rule normalized type
+  local -a rules fields
+  [[ "$PATRONI_HBA_RULES" != *$'\n'* && "$PATRONI_HBA_RULES" != *$'\r'* ]] \
+    || die "config [patroni.hba].rules must be a single semicolon-separated line"
+  IFS=';' read -ra rules <<< "$PATRONI_HBA_RULES"
+  ((${#rules[@]} > 0)) || die "config [patroni.hba].rules must contain at least one rule"
+  for raw in "${rules[@]}"; do
+    rule="$(trim "$raw")"
+    [[ -n "$rule" ]] || die "config [patroni.hba].rules contains an empty rule"
+    normalized="${rule//\{node_ip\}/127.0.0.1}"
+    normalized="${normalized//\{superuser\}/postgres}"
+    normalized="${normalized//\{replication_user\}/replicator}"
+    normalized="${normalized//\{rewind_user\}/rewind}"
+    [[ ! "$normalized" =~ \{[^}]+\} ]] || die "config [patroni.hba].rules contains an unsupported placeholder: $rule"
+    read -ra fields <<< "$normalized"
+    type="${fields[0],,}"
+    case "$type" in
+      local) ((${#fields[@]} >= 4)) || die "invalid local HBA rule in [patroni.hba].rules: $rule" ;;
+      host|hostssl|hostnossl|hostgssenc|hostnogssenc) ((${#fields[@]} >= 5)) || die "invalid host HBA rule in [patroni.hba].rules: $rule" ;;
+      *) die "unsupported HBA connection type in [patroni.hba].rules: $rule" ;;
+    esac
   done
 }
 
@@ -546,15 +573,27 @@ etcd_hosts_yaml() {
 }
 
 patroni_pg_hba_yaml() {
-  local indent="${1:-    }" item node_ip
-  printf '%s- local all,replication all trust\n' "$indent"
-  printf '%s- host all,replication all 127.0.0.1/32 trust\n' "$indent"
-  for item in "${PG_NODES[@]}"; do
-    node_ip="${item#*:}"
-    printf '%s- host all %s,%s %s/32 trust\n' "$indent" "$POSTGRES_SUPERUSER" "$REWIND_USER" "$node_ip"
-    printf '%s- host replication %s %s/32 trust\n' "$indent" "$REPLICATION_USER" "$node_ip"
+  local indent="${1:-    }" raw rule expanded item node_ip
+  local -a rules
+  IFS=';' read -ra rules <<< "$PATRONI_HBA_RULES"
+  for raw in "${rules[@]}"; do
+    rule="$(trim "$raw")"
+    if [[ "$rule" == *'{node_ip}'* ]]; then
+      for item in "${PG_NODES[@]}"; do
+        node_ip="${item#*:}"
+        expanded="${rule//\{node_ip\}/$node_ip}"
+        expanded="${expanded//\{superuser\}/$POSTGRES_SUPERUSER}"
+        expanded="${expanded//\{replication_user\}/$REPLICATION_USER}"
+        expanded="${expanded//\{rewind_user\}/$REWIND_USER}"
+        printf '%s- %s\n' "$indent" "$expanded"
+      done
+    else
+      expanded="${rule//\{superuser\}/$POSTGRES_SUPERUSER}"
+      expanded="${expanded//\{replication_user\}/$REPLICATION_USER}"
+      expanded="${expanded//\{rewind_user\}/$REWIND_USER}"
+      printf '%s- %s\n' "$indent" "$expanded"
+    fi
   done
-  printf '%s- host all,replication all 0.0.0.0/0 scram-sha-256\n' "$indent"
 }
 
 etcd_client_endpoints() {

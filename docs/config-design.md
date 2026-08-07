@@ -112,6 +112,23 @@ PostgreSQL configuration:
 This split keeps installation paths, credentials, and PostgreSQL GUCs visually
 separate.
 
+## Patroni HBA rules
+
+`[patroni.hba].rules` is the single source of truth for `pg_hba` entries. Put
+multiple rules on one line separated by semicolons. Rules keep their configured
+order and are rendered into both `bootstrap.pg_hba` in each `patroni.yml` and
+the Patroni DCS `postgresql.pg_hba` configuration applied by `deploy.sh`.
+
+The following placeholders are expanded during deployment:
+
+- `{node_ip}`: emits one copy of that rule for every `[postgresql].nodes` IP.
+- `{superuser}`, `{replication_user}`, `{rewind_user}`: use the corresponding
+  names from `[postgresql.auth]`.
+
+The parser validates the connection type and minimum field count before any
+node installation starts. Put specific local, replication, and administration
+rules before broad client networks and keep the final catch-all rule last.
+
 ## Patroni Sync Modes
 
 For the requirement "always keep one synchronous standby", use:
