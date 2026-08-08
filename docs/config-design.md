@@ -117,7 +117,9 @@ separate.
 `[patroni.hba].rules` is the single source of truth for `pg_hba` entries. Put
 multiple rules on one line separated by semicolons. Rules keep their configured
 order and are rendered into both `bootstrap.pg_hba` in each `patroni.yml` and
-the Patroni DCS `postgresql.pg_hba` configuration applied by `deploy.sh`.
+the local `postgresql.pg_hba` section in each `patroni.yml`. The same rules are
+also applied to the Patroni DCS `postgresql.pg_hba` configuration by `deploy.sh`,
+so they cover both bootstrap and already-initialized clusters.
 
 The following placeholders are expanded during deployment:
 

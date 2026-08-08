@@ -322,7 +322,7 @@ apply_patroni_hba_config() {
 $(patroni_pg_hba_yaml "    ")"
   hba_b64="$(printf '%s' "$hba_yaml" | base64 | tr -d '\n')"
 
-  log "apply cluster-node-only trust rules for replication and rewind"
+  log "apply configured SCRAM pg_hba rules to Patroni DCS"
   run_remote_retry "$(primary_ip)" "printf '%s' '$hba_b64' | base64 -d | '$PATRONICTL_BIN' -c '$PATRONI_HOME/patroni.yml' edit-config '$SCOPE' --apply - --force"
   sleep "$PATRONI_LOOP_WAIT"
 }

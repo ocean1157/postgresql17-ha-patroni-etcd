@@ -78,11 +78,13 @@ Patroni 前直接失败并输出具体文件，避免进入 bootstrap 失败和�
 ## 生产部署建议
 
 - 不建议关闭防火墙和 SELinux。脚本仅提示端口要求，默认不关闭安全机制。
+- 当 `open_firewall_ports=true` 且节点上的 firewalld 正在运行时，部署脚本会在所有集群节点永久开放 5432、8008、2379、2380，并执行 reload；firewalld 未安装或未运行时只记录跳过信息，不会主动启动服务。
 - 不使用 `trust` 复制认证。复制用户、管理用户默认采用 SCRAM-SHA-256。
 - etcd 使用 v3 API，不启用旧文档中的 `enable-v2`。
 - systemd 设置 `Restart=on-failure`、`LimitNOFILE` 和服务依赖，避免早期 `Restart=no` 导致进程异常后无人拉起。
 - PostgreSQL 参数集中进入 Patroni `bootstrap.dcs.postgresql.parameters`，不要手工分别改每个节点。
 - HBA 规则集中配置在 `cluster.env` 的 `[patroni.hba].rules`。多条规则以英文分号分隔；可使用 `{node_ip}`、`{superuser}`、`{replication_user}`、`{rewind_user}` 占位符。部署时同一组规则会同时写入 `patroni.yml` 的 `bootstrap.pg_hba`，并在集群启动后写入 Patroni DCS 动态配置。
+- 同一组 HBA 规则也会写入每个节点 `patroni.yml` 的本地 `postgresql.pg_hba`；默认保留本地 peer/127.0.0.1 访问，并为普通数据库和 replication 连接提供 `hostssl`、`host` 的 SCRAM-SHA-256 规则。
 - VIP sudo 权限最小化，只允许 `ip` 和 `arping`。
 - 备份建议接入 pgBackRest 或企业备份平台；本项目只提供 HA 部署和基础巡检，不把裸 `find -exec rm -rf` 清理策略作为默认项。
 
@@ -96,6 +98,18 @@ patronictl -c /etc/patroni/patroni.yml list
 psql -h <VIP或主节点IP> -p 5432 -U postgres -d postgres -c "select version();"
 bash scripts/check-cluster.sh
 ```
+
+默认巡检是只读检查，覆盖 etcd、Patroni、每个 PostgreSQL 节点的实际连接、复制状态，
+以及 5432、8008、2379、2380 端口的 firewalld 当前规则和永久规则。上线验收执行：
+
+```bash
+bash scripts/check-cluster.sh --full
+```
+
+全量验收会创建一个进程级唯一的临时数据库，执行 `pgbench -i` 和
+`pgbench -T 100` 后自动删除；随后执行一次 Patroni switchover，并按照“备库优先、
+主库最后”的顺序逐节点重启 `patroni.service`，每一步都等待集群恢复为一个 Leader
+和全部 streaming Replica。该模式会引起角色切换和短暂连接中断，只应在维护窗口执行。
 
 ## 安装包说明
 

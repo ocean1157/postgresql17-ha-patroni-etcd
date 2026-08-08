@@ -218,16 +218,14 @@ EOF
 
 configure_firewall() {
   if is_true "$OS_OPEN_FIREWALL_PORTS" && command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
-    log "open firewall ports for PostgreSQL HA"
-    if is_true "$IS_POSTGRESQL_NODE"; then
-      firewall-cmd --permanent --add-port="${POSTGRES_PORT}/tcp"
-      firewall-cmd --permanent --add-port="${PATRONI_PORT}/tcp"
-    fi
-    if is_true "$IS_ETCD_NODE"; then
-      firewall-cmd --permanent --add-port="${ETCD_CLIENT_PORT}/tcp"
-      firewall-cmd --permanent --add-port="${ETCD_PEER_PORT}/tcp"
-    fi
+    log "firewalld is active; permanently open all PostgreSQL HA ports on this cluster node"
+    firewall-cmd --permanent --add-port="${POSTGRES_PORT}/tcp"
+    firewall-cmd --permanent --add-port="${PATRONI_PORT}/tcp"
+    firewall-cmd --permanent --add-port="${ETCD_CLIENT_PORT}/tcp"
+    firewall-cmd --permanent --add-port="${ETCD_PEER_PORT}/tcp"
     firewall-cmd --reload
+  elif is_true "$OS_OPEN_FIREWALL_PORTS"; then
+    log "firewalld is not installed or not active; skip firewall port configuration"
   fi
 }
 
@@ -771,6 +769,8 @@ postgresql:
   bin_dir: ${PG_PREFIX}/bin
   config_dir: ${PG_DATA}
   pgpass: ${PGPASS_FILE}
+  pg_hba:
+${pg_hba}
   authentication:
     superuser:
       username: ${POSTGRES_SUPERUSER}
